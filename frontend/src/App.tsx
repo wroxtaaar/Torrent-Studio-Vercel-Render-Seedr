@@ -1093,6 +1093,9 @@ export default function App() {
 
         const completedFolderId = String(
           (result as any).folderId ||
+          (Array.isArray((result as any).files)
+            ? (result as any).files.find((file: any) => String(file?.folderId || '').trim())?.folderId
+            : '') ||
           progressResult.folderId ||
           seedrNotice.folderId ||
           ''
@@ -1173,7 +1176,7 @@ export default function App() {
           }
 
           for (let attempt = 0; attempt < 12; attempt += 1) {
-            const refreshed = await loadSeedrLibrary();
+            const refreshed = await loadSeedrLibrary(true);
 
             // loadSeedrLibrary replaces the folder array with the latest API
             // response. Preserve our eager completed folder if Seedr's index is
