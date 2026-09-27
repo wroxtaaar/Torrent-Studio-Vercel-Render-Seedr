@@ -1,8 +1,10 @@
 import asyncio
 import base64
+import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlsplit
@@ -368,6 +370,130 @@ _seedr_metadata_task: asyncio.Task | None = None
 _seedr_folder_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _seedr_torrent_names: dict[str, str] = {}
 _seedr_torrent_names_by_task: dict[str, str] = {}
+
+SEEDR_AUTO_DELETE_SECONDS = 2 * 60 * 60
+SEEDR_CLEANUP_FILE = Path("/app/.seedr_cleanup.json")
+_seedr_cleanup_jobs: dict[str, dict[str, Any]] = {}
+_seedr_cleanup_worker_task: asyncio.Task | None = None
+
+
+def _load_seedr_cleanup_jobs() -> None:
+    global _seedr_cleanup_jobs
+    try:
+        raw = SEEDR_CLEANUP_FILE.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            _seedr_cleanup_jobs = {
+                str(k): v for k, v in data.items()
+                if isinstance(v, dict) and float(v.get("deleteAt") or 0) > 0
+            }
+    except Exception:
+        _seedr_cleanup_jobs = {}
+
+
+def _save_seedr_cleanup_jobs() -> None:
+    try:
+        SEEDR_CLEANUP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SEEDR_CLEANUP_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_seedr_cleanup_jobs, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(SEEDR_CLEANUP_FILE)
+    except Exception as exc:
+        logger.info("Could not persist Seedr cleanup schedule: %s", exc)
+
+
+def schedule_seedr_cleanup(
+    task_id_value: str,
+    torrent_name: str,
+    folder_id: str = "",
+    added_at: float | None = None,
+) -> None:
+    tid = str(task_id_value or "").strip()
+    if not tid:
+        return
+
+    now = time.time()
+    started = float(added_at or now)
+    _seedr_cleanup_jobs[tid] = {
+        "taskId": tid,
+        "torrentName": str(torrent_name or "").strip() or f"Torrent {tid}",
+        "folderId": str(folder_id or "").strip(),
+        "addedAt": started,
+        "deleteAt": started + SEEDR_AUTO_DELETE_SECONDS,
+    }
+    _save_seedr_cleanup_jobs()
+
+
+async def _cleanup_seedr_job(tid: str, job: dict[str, Any]) -> bool:
+    folder_id = str(job.get("folderId") or "").strip()
+    torrent_name = str(job.get("torrentName") or f"Torrent {tid}").strip()
+
+    # Seedr may expose the folder only after the task starts.
+    if not folder_id:
+        try:
+            raw = seedr_data(await seedr_request(f"/tasks/{quote(tid)}"))
+            task = unwrap_seedr_task(raw)
+            folder_id = seedr_task_folder_id(task)
+            if folder_id:
+                job["folderId"] = folder_id
+                _save_seedr_cleanup_jobs()
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                _seedr_cleanup_jobs.pop(tid, None)
+                _save_seedr_cleanup_jobs()
+                return True
+            return False
+        except Exception:
+            return False
+
+    if not folder_id or not folder_id.isdigit() or folder_id == SEEDR_LIBRARY_FOLDER_ID:
+        return False
+
+    # Stop the Seedr task first so an active transfer cannot keep rebuilding
+    # files while the folder is being removed.
+    try:
+        await seedr_request(f"/tasks/{quote(tid)}", "DELETE")
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            logger.info("Seedr task cleanup failed for %s: HTTP %s", tid, exc.status_code)
+            return False
+    except Exception as exc:
+        logger.info("Seedr task cleanup failed for %s: %s", tid, exc)
+        return False
+
+    try:
+        await seedr_folder_delete(folder_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            logger.info("Seedr folder cleanup failed for %s (%s): HTTP %s", torrent_name, folder_id, exc.status_code)
+            return False
+    except Exception as exc:
+        logger.info("Seedr folder cleanup failed for %s (%s): %s", torrent_name, folder_id, exc)
+        return False
+
+    _seedr_cleanup_jobs.pop(tid, None)
+    _save_seedr_cleanup_jobs()
+    logger.info("Auto-deleted Seedr torrent after 2 hours: %s (task=%s folder=%s)", torrent_name, tid, folder_id)
+    return True
+
+
+async def _seedr_cleanup_worker() -> None:
+    while True:
+        try:
+            now = time.time()
+            due = [
+                (tid, job)
+                for tid, job in list(_seedr_cleanup_jobs.items())
+                if float(job.get("deleteAt") or 0) <= now
+            ]
+            for tid, job in due:
+                await _cleanup_seedr_job(tid, job)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.info("Seedr cleanup worker error: %s", exc)
+        await asyncio.sleep(30)
+
+
 
 async def collect_folder(folder_id: str, path: str = "/", depth: int = 0) -> list[dict[str, Any]]:
     if depth > 8:
@@ -1133,6 +1259,14 @@ def parse_size(value: str) -> int:
 async def root():
     return {"name": APP_NAME, "status": "ok"}
 
+@app.on_event("startup")
+async def start_seedr_cleanup_worker():
+    global _seedr_cleanup_worker_task
+    _load_seedr_cleanup_jobs()
+    if _seedr_cleanup_worker_task is None or _seedr_cleanup_worker_task.done():
+        _seedr_cleanup_worker_task = asyncio.create_task(_seedr_cleanup_worker())
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "seedrConfigured": bool(SEEDR_TOKEN), "torrentSearchApi": TORRENT_SEARCH_API_URL}
@@ -1247,6 +1381,12 @@ async def seedr_add(body: MagnetRequest):
     if torrent_name and task_folder_id:
         _seedr_torrent_names[task_folder_id] = torrent_name
         folder_renamed = await rename_seedr_folder(task_folder_id, torrent_name)
+
+    schedule_seedr_cleanup(
+        task_id_value,
+        torrent_name or seedr_task_name(task) or f"Torrent {task_id_value}",
+        task_folder_id,
+    )
 
     return {
         "backend": "seedr",
@@ -2234,5 +2374,10 @@ async def search_torrent_add(body: dict[str, Any]):
         magnet = "magnet:?xt=urn:btih:" + str(body["infoHash"])
     if not magnet:
         return {"added": False, "reason": "no_magnet_or_info_hash"}
-    result = await seedr_add(MagnetRequest(magnet=magnet))
+    result = await seedr_add(
+        MagnetRequest(
+            magnet=magnet,
+            torrent_name=str(body.get("torrent_name") or "").strip() or None,
+        )
+    )
     return {"added": True, **result}
