@@ -226,29 +226,51 @@ async def folder_name(folder_id: str) -> str:
             continue
     return ""
 
+SEEDR_FOLDER_CONCURRENCY = 6
+_seedr_folder_semaphore = asyncio.Semaphore(SEEDR_FOLDER_CONCURRENCY)
+
 async def collect_folder(folder_id: str, path: str = "/", depth: int = 0) -> list[dict[str, Any]]:
     if depth > 8:
         return []
-    try:
-        payload = seedr_data(await seedr_request(f"/fs/folder/{quote(folder_id)}/contents"))
-    except HTTPException as exc:
-        if exc.status_code == 404:
-            return []
-        raise
+
+    async with _seedr_folder_semaphore:
+        try:
+            payload = seedr_data(await seedr_request(f"/fs/folder/{quote(folder_id)}/contents"))
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return []
+            raise
+
     if not isinstance(payload, dict):
         return []
-    files = []
+
+    files: list[dict[str, Any]] = []
     for raw in arr(payload, ("files", "items")):
-        f = normalize_file(raw, folder_id)
-        f["folderPath"] = path
-        f["url"] = None
-        files.append(f)
+        item = normalize_file(raw, folder_id)
+        item["folderPath"] = path
+        item["url"] = None
+        files.append(item)
+
+    child_jobs: list[asyncio.Future] = []
     for raw in arr(payload, ("folders", "directories")):
         child_id = str(raw.get("id") or raw.get("folder_id") or "") if isinstance(raw, dict) else ""
         if not child_id:
             continue
-        child_name = str(raw.get("name") or raw.get("title") or child_id) if isinstance(raw, dict) else child_id
-        files.extend(await collect_folder(child_id, path.rstrip("/") + "/" + child_name, depth + 1))
+
+        child_name = (
+            str(raw.get("name") or raw.get("title") or child_id)
+            if isinstance(raw, dict)
+            else child_id
+        )
+        child_path = path.rstrip("/") + "/" + child_name
+        child_jobs.append(collect_folder(child_id, child_path, depth + 1))
+
+    if child_jobs:
+        children = await asyncio.gather(*child_jobs, return_exceptions=True)
+        for child in children:
+            if isinstance(child, list):
+                files.extend(child)
+
     return files
 
 async def download_url(file_id: str) -> dict[str, str]:
@@ -477,29 +499,27 @@ async def seedr_task(tid: str):
 async def seedr_files():
     if not SEEDR_TOKEN:
         return {"configured": False, "files": []}
+
     root = SEEDR_LIBRARY_FOLDER_ID
     if not root.isdigit():
         return {"configured": True, "files": []}
-    targets = [(root, "/Torrent Studio")]
-    try:
-        payload = seedr_data(await seedr_request("/tasks"))
-        for raw in arr(payload, ("tasks", "torrents")):
-            if not isinstance(raw, dict) or not task_complete(raw):
-                continue
-            child = str(raw.get("folder_created_id") or "")
-            if child:
-                name = await folder_name(child)
-                targets.append((child, "/Torrent Studio/" + (name or child)))
-    except Exception:
-        pass
-    result: list[dict[str, Any]] = []
+
+    # The Seedr library folder is already the authoritative filesystem root.
+    # Do not scan /tasks or make extra folder-name requests on every refresh.
+    # Walking the filesystem directly is both cheaper and more accurate.
+    result = await collect_folder(root, "/Torrent Studio")
+
+    # Defensive de-duplication in case Seedr exposes the same file through
+    # multiple filesystem entries.
+    unique: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for fid, path in dict.fromkeys(targets):
-        for f in await collect_folder(fid, path):
-            if f["id"] and f["id"] not in seen:
-                seen.add(f["id"])
-                result.append(f)
-    return {"configured": True, "files": result}
+    for item in result:
+        item_id = str(item.get("id") or "")
+        if item_id and item_id not in seen:
+            seen.add(item_id)
+            unique.append(item)
+
+    return {"configured": True, "files": unique}
 
 @app.get("/api/seedr/files/{file_id}/download")
 async def seedr_file_download(file_id: str):
