@@ -280,15 +280,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         setInspectedTorrentName(String(data.name || '').trim());
 
         if (data.files.length === 1) {
-          if (selectionReason) {
-            setInspectionSource(
-              `This torrent has one file (${formatBytes(Number(data.files[0]?.size || 0))}). A single-file torrent cannot be reduced to fit Seedr's remaining space.`
-            );
-            setError(
-              `Seedr has ${formatBytes(selectionReason.remainingSpace)} remaining, but this torrent needs ${formatBytes(Number(data.files[0]?.size || 0))}.`
-            );
-            return;
-          }
 
           await startSingleFileDownload(
             resolvedSource,
@@ -342,15 +333,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             applyFileList(normalizedFiles);
 
             if (normalizedFiles.length === 1) {
-              if (selectionReason) {
-                setInspectionSource(
-                  `This torrent has one file (${formatBytes(Number(normalizedFiles[0]?.size || 0))}). A single-file torrent cannot be reduced to fit Seedr's remaining space.`
-                );
-                setError(
-                  `Seedr has ${formatBytes(selectionReason.remainingSpace)} remaining, but this torrent needs ${formatBytes(Number(normalizedFiles[0]?.size || 0))}.`
-                );
-                return;
-              }
 
               await startSingleFileDownload(
                 source,
@@ -959,49 +941,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                 <span>
                   Selected Download Size: <strong className="text-cyan-400 font-mono">{formatBytes(totalSelectedSize)}</strong> / {formatBytes(totalTorrentSize)} total
                 </span>
-              </div>
-
-              <div className="border-t border-slate-800/80 p-3 bg-slate-900/40">
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-semibold text-amber-300">
-                      Experimental Seedr selection test
-                    </div>
-                    <p className="text-[10px] text-slate-500 mt-0.5">
-                      Writes the selected-file bitmap to Seedr and verifies that Seedr preserved it. This starts a test task.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleSeedrSelectionProbe()}
-                    disabled={isTestingSeedrSelection || isInspecting || totalTorrentSize <= 0}
-                    className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-[11px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    {isTestingSeedrSelection
-                      ? 'Testing…'
-                      : 'Test Seedr Selection API'}
-                  </button>
-                </div>
-
-                {seedrSelectionTestResult && (
-                  <div className="mt-2 rounded-lg bg-slate-950 border border-slate-800 p-2.5 text-[10px] text-slate-400">
-                    <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      <span>Selection write: <strong className={seedrSelectionTestResult.writeAccepted ? "text-emerald-400" : "text-rose-400"}>{seedrSelectionTestResult.writeAccepted ? 'accepted' : 'failed'}</strong></span>
-                      <span>Task: <strong className="text-slate-200 font-mono">{seedrSelectionTestResult.taskId}</strong></span>
-                      <span>{seedrSelectionTestResult.created ? 'Test task created' : 'Existing task reused'}</span>
-                      {seedrSelectionTestResult.acceptedBitOrder && (
-                        <span>Bitmap: <strong className="text-slate-200">{seedrSelectionTestResult.acceptedBitOrder.toUpperCase()} verified</strong></span>
-                      )}
-                    </div>
-                    <div className="mt-1 break-all font-mono text-slate-500">
-                      {seedrSelectionTestResult.writeAccepted
-                        ? <>Selected {formatBytes(seedrSelectionTestResult.selectedSize || 0)} of {formatBytes(seedrSelectionTestResult.totalSize || 0)}. Verified unwanted bitmap: {typeof seedrSelectionTestResult.unwanted === 'string'
-                            ? seedrSelectionTestResult.unwanted || '(empty)'
-                            : JSON.stringify(seedrSelectionTestResult.unwanted)}</>
-                        : <>Selection write failed: {seedrSelectionTestResult.writeError || 'Seedr did not confirm the requested file selection.'}</>}
-                    </div>
-                  </div>
-                )}
               </div>
 
               </div>
