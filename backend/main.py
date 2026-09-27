@@ -226,8 +226,14 @@ async def folder_name(folder_id: str) -> str:
             continue
     return ""
 
-SEEDR_FOLDER_CONCURRENCY = 6
+SEEDR_FOLDER_CONCURRENCY = 8
 _seedr_folder_semaphore = asyncio.Semaphore(SEEDR_FOLDER_CONCURRENCY)
+
+# Library metadata is shared between the Files explorer and the Seedr Library
+# so opening the Files tab does not trigger the same Seedr tree walk twice.
+SEEDR_METADATA_CACHE_SECONDS = 5
+_seedr_metadata_cache: tuple[float, dict[str, Any]] | None = None
+_seedr_metadata_task: asyncio.Task | None = None
 
 async def collect_folder(folder_id: str, path: str = "/", depth: int = 0) -> list[dict[str, Any]]:
     if depth > 8:
@@ -495,8 +501,151 @@ async def seedr_task(tid: str):
                 pass
     return {"taskId": tid, "name": str(task.get("title") or task.get("name") or ""), "folderName": folderNameValue, "folderId": folder_id, "status": "completed" if complete else "downloading", "progress": progress, "task": task, "files": files, "downloadUrl": next((f["url"] for f in files if f.get("url")), None)}
 
+async def seedr_folder_payload(folder_id: str) -> dict[str, Any]:
+    """Fetch one Seedr folder level only, without resolving download URLs."""
+    async with _seedr_folder_semaphore:
+        try:
+            payload = seedr_data(await seedr_request(f"/fs/folder/{quote(folder_id)}/contents"))
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return {}
+            raise
+    return payload if isinstance(payload, dict) else {}
+
+
+def direct_folder_summary(folder_id: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    files = arr(payload, ("files", "items"))
+    folders = arr(payload, ("folders", "directories"))
+    total_size = 0
+    valid_files = 0
+    for raw in files:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            size = int(float(raw.get("size") or 0))
+        except Exception:
+            size = 0
+        total_size += max(0, size)
+        if str(raw.get("id") or raw.get("file_id") or "").strip():
+            valid_files += 1
+
+    return {
+        "id": str(folder_id),
+        "folderId": str(folder_id),
+        "name": Path(path.rstrip("/")).name or "Root Files",
+        "path": path,
+        "filesCount": valid_files,
+        "totalSize": total_size,
+        "folderCount": len([x for x in folders if isinstance(x, dict)]),
+    }
+
+
+async def build_seedr_metadata_tree(folder_id: str, path: str, depth: int = 0) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if depth > 8:
+        return ({"id": folder_id, "folderId": folder_id, "name": Path(path.rstrip("/")).name or "Root Files", "path": path, "filesCount": 0, "totalSize": 0, "folderCount": 0}, [])
+
+    payload = await seedr_folder_payload(folder_id)
+    summary = direct_folder_summary(folder_id, path, payload)
+
+    child_jobs: list[asyncio.Future] = []
+    child_meta: list[tuple[dict[str, Any], str]] = []
+    for raw in arr(payload, ("folders", "directories")):
+        if not isinstance(raw, dict):
+            continue
+        child_id = str(raw.get("id") or raw.get("folder_id") or "").strip()
+        if not child_id:
+            continue
+        child_name = str(raw.get("name") or raw.get("title") or child_id).strip() or child_id
+        child_path = path.rstrip("/") + "/" + child_name
+        child_meta.append((raw, child_path))
+        child_jobs.append(build_seedr_metadata_tree(child_id, child_path, depth + 1))
+
+    children: list[dict[str, Any]] = []
+    if child_jobs:
+        results = await asyncio.gather(*child_jobs, return_exceptions=True)
+        for result in results:
+            if isinstance(result, tuple):
+                child_summary, grand_children = result
+                children.append(child_summary)
+                children.extend(grand_children)
+
+    # Aggregate descendant file counts/sizes so the UI can render folder
+    # metadata immediately without downloading the actual file list.
+    summary["filesCount"] += sum(int(item.get("filesCount") or 0) for item in children)
+    summary["totalSize"] += sum(int(item.get("totalSize") or 0) for item in children)
+    summary["folderCount"] = len(children)
+    return summary, children
+
+
+async def get_seedr_metadata_tree() -> dict[str, Any]:
+    global _seedr_metadata_cache, _seedr_metadata_task
+
+    if not SEEDR_TOKEN:
+        return {"configured": False, "root": None, "folders": []}
+
+    now = asyncio.get_running_loop().time()
+    if _seedr_metadata_cache and now - _seedr_metadata_cache[0] < SEEDR_METADATA_CACHE_SECONDS:
+        return _seedr_metadata_cache[1]
+
+    if _seedr_metadata_task is not None and not _seedr_metadata_task.done():
+        return await _seedr_metadata_task
+
+    async def build() -> dict[str, Any]:
+        root = SEEDR_LIBRARY_FOLDER_ID
+        if not root.isdigit():
+            return {"configured": True, "root": None, "folders": []}
+
+        root_summary, all_children = await build_seedr_metadata_tree(root, "/Torrent Studio")
+        result = {
+            "configured": True,
+            "root": root_summary,
+            "folders": all_children,
+        }
+        return result
+
+    _seedr_metadata_task = asyncio.create_task(build())
+    try:
+        result = await _seedr_metadata_task
+        _seedr_metadata_cache = (asyncio.get_running_loop().time(), result)
+        return result
+    finally:
+        _seedr_metadata_task = None
+
+
+@app.get("/api/seedr/library")
+async def seedr_library_metadata():
+    return await get_seedr_metadata_tree()
+
+
+@app.get("/api/seedr/folders/{folder_id}/contents")
+async def seedr_folder_contents(folder_id: str):
+    if not SEEDR_TOKEN:
+        return {"configured": False, "folderId": folder_id, "files": [], "folders": []}
+
+    payload = await seedr_folder_payload(folder_id)
+    files: list[dict[str, Any]] = []
+    for raw in arr(payload, ("files", "items")):
+        file = normalize_file(raw, folder_id)
+        file["url"] = None
+        files.append(file)
+
+    folders: list[dict[str, Any]] = []
+    for raw in arr(payload, ("folders", "directories")):
+        if not isinstance(raw, dict):
+            continue
+        child_id = str(raw.get("id") or raw.get("folder_id") or "").strip()
+        if not child_id:
+            continue
+        child_name = str(raw.get("name") or raw.get("title") or child_id).strip() or child_id
+        folders.append({"id": child_id, "folderId": child_id, "name": child_name})
+
+    return {"configured": True, "folderId": folder_id, "files": files, "folders": folders}
+
+
 @app.get("/api/seedr/files")
 async def seedr_files():
+    # Backwards-compatible full file endpoint. New UI code uses
+    # /api/seedr/library + /api/seedr/folders/{id}/contents instead.
     if not SEEDR_TOKEN:
         return {"configured": False, "files": []}
 
@@ -504,13 +653,7 @@ async def seedr_files():
     if not root.isdigit():
         return {"configured": True, "files": []}
 
-    # The Seedr library folder is already the authoritative filesystem root.
-    # Do not scan /tasks or make extra folder-name requests on every refresh.
-    # Walking the filesystem directly is both cheaper and more accurate.
     result = await collect_folder(root, "/Torrent Studio")
-
-    # Defensive de-duplication in case Seedr exposes the same file through
-    # multiple filesystem entries.
     unique: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in result:
@@ -543,20 +686,29 @@ async def seedr_file_stream(name: str = Query(...), type: str = Query("video")):
 async def seedr_task_delete(tid: str):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
+    global _seedr_metadata_cache
     try:
-        return await seedr_request(f"/tasks/{quote(tid)}", "DELETE")
+        result = await seedr_request(f"/tasks/{quote(tid)}", "DELETE")
     except HTTPException as exc:
         if exc.status_code != 405:
             raise
-        return await seedr_request(f"/tasks/{quote(tid)}/delete", "POST")
+        result = await seedr_request(f"/tasks/{quote(tid)}/delete", "POST")
+    _seedr_metadata_cache = None
+    return result
 
 @app.delete("/api/seedr/files/{file_id}")
 async def seedr_file_delete(file_id: str):
-    return await seedr_request(f"/fs/file/{quote(file_id)}", "DELETE")
+    global _seedr_metadata_cache
+    result = await seedr_request(f"/fs/file/{quote(file_id)}", "DELETE")
+    _seedr_metadata_cache = None
+    return result
 
 @app.delete("/api/seedr/folders/{folder_id}")
 async def seedr_folder_delete(folder_id: str):
-    return await seedr_request(f"/fs/folder/{quote(folder_id)}", "DELETE")
+    global _seedr_metadata_cache
+    result = await seedr_request(f"/fs/folder/{quote(folder_id)}", "DELETE")
+    _seedr_metadata_cache = None
+    return result
 
 # Compatibility endpoints for the preserved UI. They intentionally do not run
 # qBittorrent or maintain local torrent storage; Seedr is the only transfer backend.
@@ -585,41 +737,104 @@ async def noop_prio(body: dict[str, Any]):
     return {}
 
 @app.get("/api/files")
-async def files_compat(folder: str = "/", search: str = "", type: str = "all"):
-    data = await seedr_files()
-    files = []
-    for f in data.get("files", []):
+async def files_compat(
+    folder: str = "/",
+    search: str = "",
+    type: str = "all",
+    folder_id: str = "",
+):
+    # Only load files for the folder currently open in the UI. Folder metadata
+    # is returned separately by /api/folders.
+    target_id = folder_id.strip()
+    if not target_id:
+        target_id = SEEDR_LIBRARY_FOLDER_ID if folder in {"/", "/Torrent Studio"} else ""
+
+    if not target_id.isdigit():
+        metadata = await get_seedr_metadata_tree()
+        for item in metadata.get("folders", []) if isinstance(metadata, dict) else []:
+            if str(item.get("path") or "") == folder:
+                target_id = str(item.get("id") or "")
+                break
+
+    if not target_id.isdigit():
+        return []
+
+    payload = await seedr_folder_payload(target_id)
+    result = []
+    for raw in arr(payload, ("files", "items")):
+        f = normalize_file(raw, target_id)
         name = f["name"]
         if search and search.lower() not in name.lower():
             continue
-        files.append({
-            "id": f["id"], "name": name, "path": f.get("folderPath", folder) + "/" + name,
-            "folder": f.get("folderPath", folder), "size": f["size"], "type": "video" if re.search(r"\.(mp4|mkv|webm|avi|mov)$", name, re.I) else "other",
-            "mimeType": "video/mp4" if re.search(r"\.mp4$", name, re.I) else "application/octet-stream",
-            "createdAt": 0, "isStreamable": bool(re.search(r"\.(mp4|mkv|webm|avi|mov|mp3|m4a|flac)$", name, re.I)),
-            "ownerId": "seedr", "ownerName": "Seedr", "downloadUrl": f"/api/seedr/files/{f['id']}/download", "streamUrl": ""
+
+        lower = name.lower()
+        if type != "all":
+            if type == "video" and not re.search(r"\.(mkv|mp4|m4v|webm|avi|mov|m3u8|ts)$", lower):
+                continue
+            if type == "audio" and not re.search(r"\.(mp3|wav|flac|aac|ogg|m4a)$", lower):
+                continue
+            if type == "document" and not re.search(r"\.(pdf|txt|doc|docx|xls|xlsx|ppt|pptx|csv)$", lower):
+                continue
+            if type == "archive" and not re.search(r"\.(zip|rar|7z|tar|gz|bz2)$", lower):
+                continue
+
+        folder_path = folder if folder not in {"", "/"} else "/Torrent Studio"
+        result.append({
+            "id": f["id"],
+            "name": name,
+            "path": folder_path.rstrip("/") + "/" + name,
+            "folder": folder_path,
+            "size": f["size"],
+            "type": "video" if re.search(r"\.(mp4|mkv|webm|avi|mov|m4v|m3u8|ts)$", lower) else "other",
+            "mimeType": "video/mp4" if re.search(r"\.mp4$", lower) else "application/octet-stream",
+            "createdAt": 0,
+            "isStreamable": bool(re.search(r"\.(mp4|mkv|webm|avi|mov|m3u8|ts|mp3|m4a|flac|aac|ogg)$", lower)),
+            "ownerId": "seedr",
+            "ownerName": "Seedr",
+            "downloadUrl": f"/api/seedr/files/{f['id']}/download",
+            "streamUrl": "",
         })
-    return files
+    return result
+
 
 @app.get("/api/folders")
 async def folders_compat():
-    data = await seedr_files()
-    groups: dict[str, dict[str, Any]] = {}
-    for f in data.get("files", []):
-        path = f.get("folderPath") or "/"
-        groups.setdefault(path, {"id": f.get("folderId") or path, "name": Path(path).name or "Root Files", "path": path, "ownerId": "seedr", "ownerName": "Seedr", "isShared": False, "permissions": {}, "createdAt": 0, "filesCount": 0, "totalSize": 0})
-        groups[path]["filesCount"] += 1
-        groups[path]["totalSize"] += int(f.get("size") or 0)
-    return list(groups.values())
+    metadata = await get_seedr_metadata_tree()
+    return [
+        {
+            "id": str(item.get("id") or ""),
+            "name": str(item.get("name") or "Folder"),
+            "path": str(item.get("path") or "/"),
+            "ownerId": "seedr",
+            "ownerName": "Seedr",
+            "isShared": False,
+            "permissions": {},
+            "createdAt": 0,
+            "filesCount": int(item.get("filesCount") or 0),
+            "totalSize": int(item.get("totalSize") or 0),
+        }
+        for item in metadata.get("folders", [])
+    ] if isinstance(metadata, dict) else []
 
 @app.get("/api/storage/stats")
 async def storage_stats():
     q = await seedr_quota()
-    files = await seedr_files()
+    metadata = await get_seedr_metadata_tree()
+    root = metadata.get("root") if isinstance(metadata, dict) else {}
     used = int(q.get("usedSpace") or 0)
     total = int(q.get("maxSpace") or SEEDR_MAX_SIZE_BYTES)
     pct = (used / total * 100) if total else 0
-    return {"totalBytes": total, "usedBytes": used, "freeBytes": max(0, total-used), "usedPercentage": pct, "filesCount": len(files.get("files", [])), "torrentsCount": 0, "isUnlimited": False, "serverCapacityLabel": "Seedr cloud storage", "alertLevel": "critical" if pct > 90 else "warning" if pct > 80 else "normal"}
+    return {
+        "totalBytes": total,
+        "usedBytes": used,
+        "freeBytes": max(0, total-used),
+        "usedPercentage": pct,
+        "filesCount": int((root or {}).get("filesCount") or 0),
+        "torrentsCount": 0,
+        "isUnlimited": False,
+        "serverCapacityLabel": "Seedr cloud storage",
+        "alertLevel": "critical" if pct > 90 else "warning" if pct > 80 else "normal",
+    }
 
 @app.get("/api/users")
 async def users():
