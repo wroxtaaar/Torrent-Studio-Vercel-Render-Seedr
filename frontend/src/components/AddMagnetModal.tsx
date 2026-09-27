@@ -101,7 +101,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     setError('');
     setShowManifestEditor(false);
     setPasteManifestText('');
-    setSeedrSelectionTestResult(null);
   }, [isOpen, initialMagnet]);
 
   const classifyFileType = (name: string): InspectFileItem['type'] => {
