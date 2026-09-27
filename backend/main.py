@@ -2543,6 +2543,21 @@ def _rewrite_hls_manifest(file_id: str, manifest_text: str, base_url: str) -> st
     return "\n".join(rewritten) + ("\n" if manifest_text.endswith("\n") else "")
 
 
+async def _presentation_is_hls(url: str) -> bool:
+    """Probe a Seedr presentation URL without downloading the full media file."""
+    if not url:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            response = await client.get(url, headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,video/*,*/*", "Range": "bytes=0-2047"})
+        content_type = str(response.headers.get("content-type") or "").lower()
+        prefix = response.content[:2048].decode("utf-8", errors="ignore")
+        return "mpegurl" in content_type or "#EXTM3U" in prefix
+    except Exception as exc:
+        logger.info("Seedr presentation probe failed: %s", exc)
+        return False
+
+
 async def _fetch_seedr_hls_manifest(file_id: str) -> tuple[str, str]:
     # Seedr V2 exposes the playback URL used by current clients. Prefer that
     # presentation endpoint before falling back to the older /media/hls route.
@@ -2663,15 +2678,21 @@ async def seedr_file_stream(
 
     if type == "video":
         presentation_url = await seedr_v2_video_url(resolved_id)
+        if presentation_url and not await _presentation_is_hls(presentation_url):
+            # Seedr can return a browser-compatible direct presentation stream
+            # (MP4) instead of an HLS playlist. Proxy that stream so Chrome can
+            # use Range requests without exposing the Seedr token.
+            browser_url = "/api/seedr/media/video/" + quote(resolved_id, safe="")
+            protocol = "direct"
+        else:
+            browser_url = "/api/seedr/hls/" + quote(resolved_id, safe="")
+            protocol = "hls"
         return {
-            # Browser playback uses our same-origin HLS proxy, which now pulls
-            # the Seedr V2 presentation stream. Keep the direct V2 URL for
-            # external players such as VLC/MX Player.
-            "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
+            "url": browser_url,
             "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
             "name": name or resolved_id,
             "resolvedFileId": resolved_id,
-            "protocol": "hls",
+            "protocol": protocol,
         }
 
     return {
@@ -2774,7 +2795,69 @@ async def seedr_hls_resource(request: Request, file_id: str, u: str = Query(...)
     )
 
 
-@app.get("/api/seedr/media/audio/{file_id}")
+@app.get("/api/seedr/media/video/{file_id}")
+async def seedr_video_media(file_id: str, request: Request):
+    if not SEEDR_TOKEN:
+        raise HTTPException(503, "Seedr is not configured")
+
+    upstream_url = await seedr_v2_video_url(file_id)
+    if not upstream_url:
+        raise HTTPException(404, "Seedr returned no video presentation URL")
+
+    headers = {"Accept": "video/*,application/octet-stream,*/*"}
+    range_header = request.headers.get("range")
+    if range_header:
+        headers["Range"] = range_header
+
+    client = httpx.AsyncClient(timeout=60, follow_redirects=True)
+    try:
+        response = await client.send(
+            client.build_request("GET", upstream_url, headers=headers),
+            stream=True,
+        )
+    except Exception:
+        await client.aclose()
+        raise
+
+    if response.status_code >= 400:
+        body = await response.aread()
+        status = response.status_code
+        content_type = response.headers.get("content-type", "application/octet-stream")
+        await response.aclose()
+        await client.aclose()
+        return Response(
+            content=body,
+            status_code=status,
+            media_type=content_type,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    response_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
+        "Cache-Control": "no-store",
+    }
+    for header in ("content-range", "content-length", "etag", "last-modified"):
+        if response.headers.get(header):
+            response_headers[header.title()] = response.headers[header]
+
+    async def body_stream():
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        body_stream(),
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "video/mp4"),
+        headers=response_headers,
+    )
+
+
+NaN
 async def seedr_audio_media(file_id: str, request: Request):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
