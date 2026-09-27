@@ -30,7 +30,7 @@ import {
 const API_BASE = String(import.meta.env.VITE_API_URL || '').replace(/\\/+$/, '');
 const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const value = String(input);
-  return apiFetch(value.startsWith('/') ? API_BASE + value : value, init);
+  return fetch(value.startsWith('/') ? API_BASE + value : value, init);
 };
 
 export const api = {
