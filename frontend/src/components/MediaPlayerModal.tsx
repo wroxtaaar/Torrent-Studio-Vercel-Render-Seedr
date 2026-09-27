@@ -235,14 +235,36 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   if (!file) return null;
 
   const handleMediaError = () => {
-    // When Hls.js owns the video element, Chrome can briefly report MEDIA_ERR_SRC_NOT_SUPPORTED
-    // while MediaSource is being attached. Hls.js is the authoritative error source in that mode.
+    // When Hls.js owns the video element, Chrome can briefly report
+    // MEDIA_ERR_SRC_NOT_SUPPORTED while MediaSource is being attached.
+    // Hls.js is the authoritative error source in that mode.
     if (hlsActiveRef.current) return;
+
     const media = mediaRef.current;
+    if (
+      media &&
+      file?.externalStreamUrl &&
+      file.externalStreamUrl !== file.streamUrl &&
+      !usingDirectFallback
+    ) {
+      // The backend proxy is the preferred browser path, but Seedr's
+      // presentation URL is known to be directly playable by Chrome for
+      // some files. If the proxy response is rejected by the browser,
+      // immediately retry the exact Seedr presentation URL rather than
+      // showing a fatal error.
+      setUsingDirectFallback(true);
+      setMediaError('');
+      setTrackNotice('Trying direct Seedr stream…');
+      media.src = file.externalStreamUrl;
+      media.load();
+      return;
+    }
+
     const code = media && 'error' in media ? media.error?.code : undefined;
     setMediaError(
       code ? `Browser could not play this stream (media error ${code}).` : 'Unable to play this video stream.'
     );
+    setTrackNotice('');
     setIsPlaying(false);
   };
 
