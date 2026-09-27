@@ -274,10 +274,15 @@ export default function App() {
   }, [seedrLibraryFolders, seedrNotice]);
 
   useEffect(() => {
-    if (selectedSeedrFolderId !== null && !seedrFolderGroups.some(folder => folder.folderId === selectedSeedrFolderId)) {
+    if (
+      selectedSeedrFolderId !== null &&
+      seedrLibraryFolders.length > 0 &&
+      !seedrFolderGroups.some(folder => folder.folderId === selectedSeedrFolderId)
+    ) {
       setSelectedSeedrFolderId(null);
+      setSeedrFiles([]);
     }
-  }, [selectedSeedrFolderId, seedrFolderGroups]);
+  }, [selectedSeedrFolderId, seedrLibraryFolders.length, seedrFolderGroups]);
 
   // File Explorer State
   const [currentFolder, setCurrentFolder] = useState<string>('/');
@@ -1657,7 +1662,7 @@ export default function App() {
                 </div>
               )}
 
-              {!seedrLoading && !seedrError && seedrConfigured && seedrDisplayFiles.length === 0 && !(seedrNotice?.taskId != null && seedrNotice.status !== 'completed') && (
+              {!seedrLoading && !seedrError && seedrConfigured && (seedrLibraryRoot?.filesCount || 0) === 0 && seedrLibraryFolders.length === 0 && !(seedrNotice?.taskId != null && seedrNotice.status !== 'completed') && (
                 <div className="mt-3 rounded-xl bg-slate-900/70 border border-slate-800 px-3 py-3 text-xs text-slate-400">
                   No completed files are currently visible in your Seedr library.
                 </div>
