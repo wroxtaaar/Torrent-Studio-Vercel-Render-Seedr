@@ -269,6 +269,58 @@ export const api = {
     };
   },
 
+  async getSeedrLibrary(): Promise<{
+    configured: boolean;
+    root: {
+      id: string;
+      folderId: string;
+      name: string;
+      path: string;
+      filesCount: number;
+      totalSize: number;
+      folderCount: number;
+    } | null;
+    folders: Array<{
+      id: string;
+      folderId: string;
+      name: string;
+      path: string;
+      filesCount: number;
+      totalSize: number;
+      folderCount: number;
+    }>;
+  }> {
+    const res = await apiFetch('/api/seedr/library');
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch { data = null; }
+    if (!res.ok) throw new Error(data?.error || body || 'Failed to fetch Seedr library metadata');
+    return {
+      configured: Boolean(data?.configured),
+      root: data?.root || null,
+      folders: Array.isArray(data?.folders) ? data.folders : [],
+    };
+  },
+
+  async getSeedrFolderContents(folderId: string): Promise<{
+    configured: boolean;
+    folderId: string;
+    files: Array<{ id: string; name: string; size: number; folderId: string; url?: string | null }>;
+    folders: Array<{ id: string; folderId: string; name: string }>;
+  }> {
+    const res = await apiFetch('/api/seedr/folders/' + encodeURIComponent(folderId) + '/contents');
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch { data = null; }
+    if (!res.ok) throw new Error(data?.error || body || 'Failed to load Seedr folder contents');
+    return {
+      configured: Boolean(data?.configured),
+      folderId: String(data?.folderId || folderId),
+      files: Array.isArray(data?.files) ? data.files : [],
+      folders: Array.isArray(data?.folders) ? data.folders : [],
+    };
+  },
+
   async getSeedrFiles(): Promise<{
     configured: boolean;
     files: Array<{ id: string; name: string; size: number; folderId: string; folderPath: string }>;
@@ -394,8 +446,9 @@ export const api = {
   },
 
   // Storage Files
-  async getFiles(folder = '/', search = '', type = 'all'): Promise<StorageFile[]> {
+  async getFiles(folder = '/', search = '', type = 'all', folderId = ''): Promise<StorageFile[]> {
     const params = new URLSearchParams({ folder, search, type });
+    if (folderId) params.set('folder_id', folderId);
     const res = await apiFetch(`/api/files?${params.toString()}`);
     if (!res.ok) throw new Error('Failed to fetch files');
     return res.json();
