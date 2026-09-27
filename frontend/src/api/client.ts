@@ -356,7 +356,14 @@ export const api = {
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
     if (!res.ok) throw new Error(data?.error || body || 'Failed to create Seedr stream URL');
-    return data;
+    const streamUrl = typeof data?.url === 'string' && data.url.startsWith('/')
+      ? API_BASE + data.url
+      : data?.url;
+    return {
+      ...data,
+      url: streamUrl,
+      externalUrl: data?.externalUrl
+    };
   },
 
   async getSeedrFolderDownload(folderId: string): Promise<{ url: string }> {
