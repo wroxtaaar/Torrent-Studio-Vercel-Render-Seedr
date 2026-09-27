@@ -14,7 +14,7 @@ import { api, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
 
 interface TorrentSearchPanelProps {
-  onAdd: (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string) => void | Promise<void>;
+  onAdd: (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string, descriptorUrl?: string) => void | Promise<void>;
 }
 
 function formatPublished(value?: string) {
@@ -446,7 +446,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
 
                             setAddingTorrentKey(torrentKey);
                             try {
-                              await onAdd(source, Number(result.size) || 0, result.title, result.infoHash, result.infoUrl || result.sourceUrl || '');
+                              await onAdd(source, Number(result.size) || 0, result.title, result.infoHash, result.infoUrl || result.sourceUrl || '', result.descriptorUrl || '');
                             } finally {
                               setAddingTorrentKey(current => current === torrentKey ? null : current);
                             }
