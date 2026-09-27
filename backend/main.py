@@ -2885,32 +2885,13 @@ async def seedr_add_selected(request: Request):
         if metadata_index not in selected_set
     ]
 
-    # Seedr's collection-level GET /tasks endpoint is currently returning
-    # HTTP 422 for this account, while the same account can successfully
-    # create tasks with POST /tasks. Duplicate lookup is therefore optional
-    # here; a failed lookup must not block a new selected transfer.
-    existing = None
-    try:
-        existing = await find_task_by_hash(h)
-    except SeedrError as exc:
-        if exc.status_code in (400, 404, 405, 422):
-            logger.warning(
-                "Seedr selected-file duplicate lookup skipped: status=%s code=%s detail=%s",
-                exc.status_code,
-                exc.code,
-                exc.detail,
-            )
-        else:
-            raise
-
-    if existing:
-        # Never mutate an existing Seedr task's file-selection state. That could
-        # alter a transfer the user did not start from this selector.
-        raise HTTPException(
-            409,
-            "A Seedr task for this torrent already exists. Remove that task from Seedr before retrying selective transfer.",
-        )
-
+    # Do not preflight GET /tasks here. Seedr's collection-level task-list
+    # endpoint is returning HTTP 422 for this account, while POST /tasks works.
+    # A selective transfer should use the create response as the authoritative
+    # task identity; a broken duplicate-list endpoint must not block the add.
+    # If Seedr rejects the create because the torrent already exists, that
+    # response is surfaced normally instead of mutating an existing task.
+    
     # Enforce the selected subset against live Seedr quota on the backend as well
     # as in the UI. This prevents stale browser quota data from starting a task
     # whose selected files do not fit.
