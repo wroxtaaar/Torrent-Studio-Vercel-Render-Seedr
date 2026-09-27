@@ -39,6 +39,7 @@ app.add_middleware(
 class MagnetRequest(BaseModel):
     magnet: str
     folder_id: str | int | None = None
+    torrent_name: str | None = None
 
 
 def seedr_data(value: Any) -> Any:
@@ -250,6 +251,7 @@ SEEDR_FOLDER_CACHE_SECONDS = 15
 _seedr_metadata_cache: tuple[float, dict[str, Any]] | None = None
 _seedr_metadata_task: asyncio.Task | None = None
 _seedr_folder_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_seedr_torrent_names: dict[str, str] = {}
 
 async def collect_folder(folder_id: str, path: str = "/", depth: int = 0) -> list[dict[str, Any]]:
     if depth > 8:
@@ -1114,7 +1116,20 @@ async def seedr_add(body: MagnetRequest):
     tid = task_id(task)
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
-    return {"backend": "seedr", "task_id": int(tid) if tid.isdigit() else tid, "id": int(tid) if tid.isdigit() else tid, "task": task}
+
+    torrent_name = str(body.torrent_name or "").strip()
+    task_folder_id = str(task.get("folder_created_id") or task.get("folder_id") or "").strip()
+    if torrent_name and task_folder_id:
+        _seedr_torrent_names[task_folder_id] = torrent_name
+
+    return {
+        "backend": "seedr",
+        "task_id": int(tid) if tid.isdigit() else tid,
+        "id": int(tid) if tid.isdigit() else tid,
+        "torrent_name": torrent_name,
+        "folder_id": task_folder_id or None,
+        "task": task,
+    }
 
 @app.get("/api/seedr/tasks/{tid}/progress")
 async def seedr_task_progress(tid: str):
@@ -1147,12 +1162,20 @@ async def seedr_task_progress(tid: str):
         "waiting" if state in {"queued", "pending", "waiting", "paused", "stopped"} else "downloading"
     )
 
+    task_folder_id = str(task.get("folder_created_id") or "").strip()
+    seedr_task_name = str(
+        _seedr_torrent_names.get(task_folder_id)
+        or task.get("torrent_name")
+        or task.get("title")
+        or task.get("name")
+        or ""
+    ).strip()
     return {
         "taskId": tid,
         "status": status,
         "progress": progress,
-        "name": str(task.get("title") or task.get("name") or ""),
-        "folderId": str(task.get("folder_created_id") or "").strip(),
+        "name": seedr_task_name,
+        "folderId": task_folder_id,
     }
 
 @app.get("/api/seedr/tasks/{tid}")
@@ -1300,6 +1323,11 @@ async def build_seedr_metadata_tree(
                     except (TypeError, ValueError):
                         pass
 
+        child_summary["torrentName"] = (
+            _seedr_torrent_names.get(child_id)
+            or folder_name_overrides.get(child_id)
+            or ""
+        )
         child_summary["folderCount"] = len(
             [x for x in arr(child_payload, ("folders", "directories")) if isinstance(x, dict)]
         )
@@ -1345,17 +1373,20 @@ async def get_seedr_metadata_tree() -> dict[str, Any]:
         # Resolve human-readable torrent names from Seedr task metadata in one
         # call. The folder contents/counts and task list are independent, so
         # fetch them concurrently without adding a serial round trip.
-        folder_name_overrides: dict[str, str] = {}
+        folder_name_overrides: dict[str, str] = dict(_seedr_torrent_names)
         try:
             tasks_payload = seedr_data(await seedr_request("/tasks"))
             for raw_task in arr(tasks_payload, ("tasks", "torrents")):
                 if not isinstance(raw_task, dict):
                     continue
                 task_folder_id = str(raw_task.get("folder_created_id") or "").strip()
+                nested_torrent = raw_task.get("torrent") if isinstance(raw_task.get("torrent"), dict) else {}
                 task_name = str(
-                    raw_task.get("title")
+                    raw_task.get("torrent_name")
+                    or raw_task.get("title")
                     or raw_task.get("name")
-                    or raw_task.get("torrent_name")
+                    or nested_torrent.get("name")
+                    or nested_torrent.get("title")
                     or ""
                 ).strip()
                 if task_folder_id and task_name:
