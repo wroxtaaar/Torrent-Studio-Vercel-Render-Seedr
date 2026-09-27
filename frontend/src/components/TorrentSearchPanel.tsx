@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search,
   X,
@@ -14,7 +14,7 @@ import { api, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
 
 interface TorrentSearchPanelProps {
-  onAdd: (source: string, size: number, title: string, infoHash?: string) => void | Promise<void>;
+  onAdd: (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string) => void | Promise<void>;
 }
 
 function formatPublished(value?: string) {
@@ -35,6 +35,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
   const [minSeeders, setMinSeeders] = useState(0);
   const [showRecentSearches, setShowRecentSearches] = useState(false);
   const [addingTorrentKey, setAddingTorrentKey] = useState<string | null>(null);
+  const recentSearchRef = useRef<HTMLDivElement | null>(null);
   const apiFetchRecent = (input: RequestInfo | URL, init?: RequestInit) => {
     const base = (String(import.meta.env.VITE_API_URL || '').trim() || 'https://torrent-studio-vercel-render-seedr.onrender.com').replace(/\/+$/, '');
     const value = String(input);
@@ -76,6 +77,18 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!showRecentSearches) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && !recentSearchRef.current?.contains(target)) {
+        setShowRecentSearches(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [showRecentSearches]);
 
   const saveRecentSearch = (value: string) => {
     const normalized = value.trim();
@@ -179,7 +192,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
         </div>
 
         <form data-torrent-search="true" onSubmit={runSearch} className="mt-4 flex flex-col sm:flex-row gap-2">
-          <div className="relative flex-1">
+          <div ref={recentSearchRef} className="relative flex-1">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
               value={query}
@@ -433,7 +446,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
 
                             setAddingTorrentKey(torrentKey);
                             try {
-                              await onAdd(source, Number(result.size) || 0, result.title, result.infoHash);
+                              await onAdd(source, Number(result.size) || 0, result.title, result.infoHash, result.infoUrl || result.sourceUrl || '');
                             } finally {
                               setAddingTorrentKey(current => current === torrentKey ? null : current);
                             }
