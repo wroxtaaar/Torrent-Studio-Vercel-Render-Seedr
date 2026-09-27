@@ -584,6 +584,8 @@ export default function App() {
         )
       );
 
+      const completedFolderId = String(seedrNotice?.folderId || '').trim();
+
       void Promise.all([
         api.getSeedrQuota().then(quota => {
           if (!quota?.configured) return;
@@ -621,6 +623,38 @@ export default function App() {
         setSeedrPrefetchLoading(false);
       });
 
+      // When a torrent has just completed, fetch that folder's files as a
+      // priority request instead of waiting for the other folders.
+      if (completedFolderId) {
+        const completedFolder = result.folders.find(
+          folder => String(folder.folderId || folder.id) === completedFolderId
+        );
+        if (completedFolder) {
+          void api.getSeedrFolderContents(completedFolderId).then(contents => {
+            const mapped = contents.files.map(file => ({
+              id: file.id,
+              streamId: file.streamId,
+              name: file.name,
+              size: Number(file.size) || 0,
+              folderId: file.folderId || completedFolderId,
+              folderPath: completedFolder.path,
+            }));
+
+            setSeedrFolderContentsCache(prev => ({
+              ...prev,
+              [completedFolderId]: mapped,
+            }));
+
+            if (selectedSeedrFolderId === completedFolderId) {
+              setSeedrFiles(mapped);
+              setSeedrFolderContentsLoading(false);
+            }
+          }).catch(error => {
+            console.warn('Failed to load completed Seedr folder immediately:', error);
+          });
+        }
+      }
+
       // Do not clear the existing file rows during refresh. React keeps the
       // current visible component intact while fresh internal details arrive.
       // The cache effect below swaps them in as soon as they are available.
@@ -628,8 +662,11 @@ export default function App() {
       setSeedrError(error?.message || 'Failed to refresh Seedr metadata');
       setSeedrLoading(false);
       setSeedrPrefetchLoading(false);
+      return null;
     }
-  }, [rememberSeedrTorrentName]);
+
+    return result;
+  }, [rememberSeedrTorrentName, seedrNotice?.folderId, selectedSeedrFolderId]);
 
   // Keep an opened folder synchronized with the background prefetch cache.
   // Changing the selected folder no longer reruns the entire library request.
@@ -989,7 +1026,7 @@ export default function App() {
 
     const timeoutId = window.setTimeout(() => {
       setSeedrNotice(null);
-    }, 3000);
+    }, 8000);
 
     return () => window.clearTimeout(timeoutId);
   }, [seedrNotice?.taskId, seedrNotice?.status]);
@@ -1110,7 +1147,31 @@ export default function App() {
           };
         });
 
-        void loadSeedrLibrary();
+        const completedFolderId = String(
+          (result as any).folderId ||
+          progressResult.folderId ||
+          seedrNotice.folderId ||
+          ''
+        ).trim();
+
+        const refreshCompletedLibrary = async () => {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const refreshed = await loadSeedrLibrary();
+            if (completedFolderId && refreshed?.folders?.some(
+              folder => String(folder.folderId || folder.id) === completedFolderId
+            )) {
+              // The priority folder request inside loadSeedrLibrary handles the
+              // file details. No need to wait for every other folder.
+              break;
+            }
+
+            if (attempt < 2) {
+              await new Promise(resolve => window.setTimeout(resolve, 1000));
+            }
+          }
+        };
+
+        void refreshCompletedLibrary();
         setActiveSeedrFolderOpen(false);
       } catch {
         scheduleNextPoll(2500);
