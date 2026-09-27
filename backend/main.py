@@ -123,6 +123,37 @@ app.add_middleware(
 )
 
 @app.middleware("http")
+async def diagnose_seedr_selected_request(request: Request, call_next):
+    if request.url.path == "/api/seedr/tasks/add-selected" and request.method.upper() == "POST":
+        content_type = str(request.headers.get("content-type") or "")
+        content_length = str(request.headers.get("content-length") or "")
+        try:
+            body = await request.body()
+            parsed = json.loads(body.decode("utf-8")) if body else None
+            shape = sorted(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__
+            logger.info(
+                "Seedr selected-file request trace: content_type=%s content_length=%s json_shape=%s",
+                content_type,
+                content_length or str(len(body)),
+                shape,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Seedr selected-file request trace parse failed: content_type=%s content_length=%s error=%s",
+                content_type,
+                content_length,
+                type(exc).__name__,
+            )
+        response = await call_next(request)
+        logger.info(
+            "Seedr selected-file request trace response: status=%s",
+            response.status_code,
+        )
+        return response
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def add_timing_allow_origin(request: Request, call_next):
     # Allows the frontend to read Resource Timing transfer sizes for the
     # cross-origin Render media stream when the frontend is hosted on Vercel.
