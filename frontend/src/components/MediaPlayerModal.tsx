@@ -120,9 +120,15 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       // Hls.js is attaching MediaSource. Clear any stale overlay once metadata
       // has successfully arrived.
       setMediaError('');
-      if (restorePlaying) {
-        media.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
-      }
+
+      // Stream buttons are an explicit user action, so always attempt to
+      // start playback as soon as the browser has media metadata. The
+      // <video>/<audio> elements also have autoPlay enabled below. If the
+      // browser's autoplay policy blocks playback, the controls remain
+      // available for a manual click.
+      media.play()
+        .then(() => setIsPlaying(true))
+        .catch(() => setIsPlaying(false));
     };
 
     media.addEventListener('loadedmetadata', handleLoaded, { once: true });
@@ -458,6 +464,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         ) : (
           <audio
             ref={audioRef}
+            autoPlay
             src={file.streamUrl}
             onTimeUpdate={onTimeUpdate}
             onLoadedMetadata={onLoadedMetadata}
@@ -601,6 +608,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           {isVideo ? (
             <video
               ref={videoRef}
+              autoPlay
               className="w-full h-full max-h-[60vh] object-contain cursor-pointer"
               onClick={togglePlay}
               onTimeUpdate={onTimeUpdate}
