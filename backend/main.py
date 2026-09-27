@@ -32,7 +32,18 @@ TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-se
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
 SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "8.5"))
 SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
+TORRENT_METADATA_CACHE_FILE = Path(os.getenv("TORRENT_METADATA_CACHE_FILE", "/app/.torrent_metadata_cache.json"))
+TORRENT_METADATA_JOB_TIMEOUT_SECONDS = float(os.getenv("TORRENT_METADATA_JOB_TIMEOUT_SECONDS", "60"))
 _search_cache: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
+
+# Metadata is deliberately independent of Seedr. The cache survives requests
+# within a Render instance, while the global libtorrent session keeps DHT state
+# warm between magnets until the container is restarted.
+_metadata_cache: dict[str, dict[str, Any]] = {}
+_metadata_jobs: dict[str, dict[str, Any]] = {}
+_libtorrent_session: Any | None = None
+_libtorrent_session_lock: asyncio.Lock | None = None
+
 app = FastAPI(title=APP_NAME)
 app.add_middleware(
     CORSMiddleware,
@@ -112,6 +123,200 @@ def decode_torrent_metadata(raw: bytes) -> dict[bytes, Any]:
     if not isinstance(value, dict):
         raise ValueError("torrent metadata root is not a dictionary")
     return value
+
+def _load_metadata_cache() -> None:
+    global _metadata_cache
+    try:
+        if TORRENT_METADATA_CACHE_FILE.exists():
+            data = json.loads(TORRENT_METADATA_CACHE_FILE.read_text("utf-8"))
+            if isinstance(data, dict):
+                _metadata_cache = {
+                    str(key).lower(): value
+                    for key, value in data.items()
+                    if isinstance(value, dict)
+                }
+    except Exception as exc:
+        logger.info("Metadata cache load skipped: %s", exc)
+
+
+def _save_metadata_cache() -> None:
+    try:
+        TORRENT_METADATA_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = TORRENT_METADATA_CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_metadata_cache, ensure_ascii=False), "utf-8")
+        tmp.replace(TORRENT_METADATA_CACHE_FILE)
+    except Exception as exc:
+        logger.info("Metadata cache save skipped: %s", exc)
+
+
+def _metadata_from_torrent_bytes(raw: bytes, info_hash_value: str, source: str) -> dict[str, Any]:
+    meta = decode_torrent_metadata(raw)
+    info = meta.get(b"info")
+    if not isinstance(info, dict):
+        raise ValueError("torrent metadata has no info dictionary")
+
+    def btext(value: Any) -> str:
+        return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+
+    name = btext(info.get(b"name")) or f"Torrent {info_hash_value[:8]}"
+    files: list[dict[str, Any]] = []
+    multi = info.get(b"files")
+    if isinstance(multi, list):
+        for index, item in enumerate(multi):
+            if not isinstance(item, dict):
+                continue
+            parts = item.get(b"path") or []
+            relative = "/".join(btext(part) for part in parts) if isinstance(parts, list) else btext(parts)
+            files.append({
+                "index": index,
+                "name": relative or name,
+                "size": int(item.get(b"length") or 0),
+                "path": relative or name,
+                "type": "file",
+                "priority": 1,
+            })
+    else:
+        files.append({
+            "index": 0,
+            "name": name,
+            "size": int(info.get(b"length") or 0),
+            "path": name,
+            "type": "file",
+            "priority": 1,
+        })
+
+    result = {
+        "name": name,
+        "hash": info_hash_value.lower(),
+        "files": files,
+        "totalSize": sum(int(item.get("size") or 0) for item in files),
+        "source": source,
+        "pending": False,
+        "createdPreview": False,
+        "message": "Torrent metadata loaded without starting Seedr.",
+    }
+    _metadata_cache[info_hash_value.lower()] = result
+    _save_metadata_cache()
+    return result
+
+
+async def _get_libtorrent_session() -> Any:
+    global _libtorrent_session, _libtorrent_session_lock
+    if _libtorrent_session is not None:
+        return _libtorrent_session
+    if _libtorrent_session_lock is None:
+        _libtorrent_session_lock = asyncio.Lock()
+    async with _libtorrent_session_lock:
+        if _libtorrent_session is not None:
+            return _libtorrent_session
+        session = lt.session()
+        session.apply_settings({
+            "enable_dht": True,
+            "enable_lsd": False,
+            "enable_upnp": False,
+            "enable_natpmp": False,
+            "enable_outgoing_tcp": True,
+            "enable_outgoing_utp": True,
+            "enable_incoming_tcp": True,
+            "enable_incoming_utp": True,
+            "listen_interfaces": "0.0.0.0:0",
+            "dht_bootstrap_nodes": (
+                "router.bittorrent.com:6881,"
+                "router.utorrent.com:6881,"
+                "dht.transmissionbt.com:6881"
+            ),
+            "announce_to_all_trackers": True,
+            "announce_to_all_tiers": True,
+            "connection_speed": 50,
+            "handshake_timeout": 10,
+        })
+        _libtorrent_session = session
+        logger.info("Started persistent libtorrent metadata session")
+        return session
+
+
+def _metadata_from_libtorrent_sync(magnet: str, info_hash_value: str) -> dict[str, Any]:
+    tmp = tempfile.mkdtemp(prefix="torrent-metadata-lt-")
+    session = _libtorrent_session
+    if session is None:
+        raise RuntimeError("libtorrent session is not initialized")
+
+    handle = None
+    try:
+        atp = lt.parse_magnet_uri(magnet)
+        atp.save_path = tmp
+        atp.flags = atp.flags | lt.torrent_flags.upload_mode
+        atp.flags = atp.flags & ~lt.torrent_flags.auto_managed
+        handle = session.add_torrent(atp)
+
+        deadline = time.monotonic() + TORRENT_METADATA_JOB_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if handle.has_metadata():
+                ti = handle.torrent_file()
+                if ti is None:
+                    raise RuntimeError("libtorrent returned metadata without torrent info")
+                fs = ti.layout()
+                files = []
+                for index in range(fs.num_files()):
+                    path = str(fs.file_path(index))
+                    files.append({
+                        "index": index,
+                        "name": path,
+                        "size": int(fs.file_size(index)),
+                        "path": path,
+                        "type": "file",
+                        "priority": 1,
+                    })
+                return {
+                    "name": str(ti.name() or f"Torrent {info_hash_value[:8]}"),
+                    "hash": info_hash_value.lower(),
+                    "files": files,
+                    "totalSize": sum(int(item["size"]) for item in files),
+                    "source": "libtorrent_metadata",
+                    "pending": False,
+                    "createdPreview": False,
+                    "message": "Torrent metadata loaded without starting Seedr.",
+                }
+
+            for alert in session.pop_alerts():
+                message = str(alert)
+                if "error" in message.lower() or "tracker" in message.lower():
+                    logger.info("libtorrent metadata alert: %s", message[:500])
+            time.sleep(0.2)
+
+        status = handle.status()
+        raise TimeoutError(
+            f"Metadata is still resolving (state={status.state}, "
+            f"peers={status.num_peers}, seeds={status.num_seeds})"
+        )
+    finally:
+        try:
+            if handle is not None and handle.is_valid():
+                session.remove_torrent(handle)
+        except Exception:
+            pass
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> None:
+    job = _metadata_jobs[job_id]
+    job["status"] = "resolving"
+    try:
+        session = await _get_libtorrent_session()
+        result = await asyncio.to_thread(_metadata_from_libtorrent_sync, magnet, info_hash_value)
+        _metadata_cache[info_hash_value.lower()] = result
+        _save_metadata_cache()
+        job.update({"status": "ready", "result": result})
+    except TimeoutError as exc:
+        job.update({"status": "resolving", "error": str(exc)})
+        logger.info("Metadata job %s still resolving: %s", job_id, exc)
+    except Exception as exc:
+        job.update({"status": "error", "error": str(exc)})
+        logger.warning("Metadata job %s failed: %s", job_id, exc)
+
+
+_load_metadata_cache()
+
 
 def seedr_data(value: Any) -> Any:
     if isinstance(value, dict) and "data" in value:
@@ -2571,7 +2776,7 @@ def _libtorrent_metadata_sync(magnet: str) -> tuple[str, str, list[dict[str, Any
 
 @app.post("/api/v2/torrents/inspect-magnet")
 async def seedr_inspect_magnet(body: dict[str, Any]):
-    """Resolve magnet metadata with libtorrent without starting Seedr."""
+    """Return cached metadata immediately or start a background resolver."""
     raw_magnet = str(body.get("magnet") or body.get("source") or "").strip()
     if not raw_magnet:
         raise HTTPException(400, "A magnet link is required")
@@ -2580,35 +2785,71 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
     h = info_hash(magnet)
     if not h:
         raise HTTPException(400, "A valid BTIH magnet link is required")
+    h = h.lower()
 
-    try:
-        torrent_name, _, files, total_size = await asyncio.to_thread(
-            _libtorrent_metadata_sync,
-            magnet,
-        )
-    except TimeoutError as exc:
-        logger.warning("libtorrent metadata timeout for %s: %s", h, exc)
-        raise HTTPException(504, str(exc)) from exc
-    except Exception as exc:
-        logger.warning("libtorrent metadata failed for %s: %s", h, exc)
-        raise HTTPException(502, f"libtorrent metadata lookup failed: {exc}") from exc
+    cached = _metadata_cache.get(h)
+    if cached:
+        return cached
 
-    torrent_name = (
-        torrent_name
-        or str(body.get("torrent_name") or "").strip()
-        or f"Torrent {h[:8]}"
+    job_id = h
+    existing = _metadata_jobs.get(job_id)
+    if existing and existing.get("status") == "ready" and existing.get("result"):
+        return existing["result"]
+
+    if not existing or existing.get("status") == "error":
+        _metadata_jobs[job_id] = {
+            "status": "queued",
+            "hash": h,
+            "startedAt": time.time(),
+            "error": None,
+        }
+        asyncio.create_task(_run_metadata_job(job_id, magnet, h))
+
+    # Give a fast first attempt a short window. Slow metadata resolution
+    # continues in the background and is polled by the frontend.
+    for _ in range(10):
+        await asyncio.sleep(0.2)
+        job = _metadata_jobs.get(job_id, {})
+        if job.get("status") == "ready" and job.get("result"):
+            return job["result"]
+        if job.get("status") == "error":
+            raise HTTPException(502, str(job.get("error") or "Metadata lookup failed"))
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "resolving",
+            "jobId": job_id,
+            "hash": h,
+            "source": "libtorrent_metadata",
+            "message": "Torrent metadata is still resolving. Seedr has not been started.",
+        },
     )
 
+
+@app.get("/api/v2/torrents/inspect-magnet/status")
+async def seedr_inspect_magnet_status(jobId: str = Query(...)):
+    job = _metadata_jobs.get(jobId.lower())
+    if not job:
+        cached = _metadata_cache.get(jobId.lower())
+        if cached:
+            return cached
+        raise HTTPException(404, "Metadata job not found")
+
+    if job.get("status") == "ready" and job.get("result"):
+        return job["result"]
+
+    if job.get("status") == "error":
+        raise HTTPException(502, str(job.get("error") or "Metadata lookup failed"))
+
     return {
-        "name": torrent_name,
-        "hash": h,
-        "files": files,
-        "totalSize": total_size,
+        "status": "resolving",
+        "jobId": jobId,
+        "hash": jobId,
         "source": "libtorrent_metadata",
-        "pending": False,
-        "createdPreview": False,
-        "message": "Torrent metadata loaded with libtorrent without starting Seedr.",
+        "message": job.get("error") or "Torrent metadata is still resolving. Seedr has not been started.",
     }
+
 
 
 @app.get("/api/v2/torrents/files")
