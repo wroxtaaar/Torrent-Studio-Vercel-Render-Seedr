@@ -120,23 +120,49 @@ def seedr_task_folder_id(task: dict[str, Any]) -> str:
     ).strip()
 
 
+def magnet_display_name(value: Any) -> str:
+    """Extract the torrent display name (dn) from a magnet-like value."""
+    raw = str(value or "").strip()
+    if not raw.lower().startswith("magnet:?"):
+        return ""
+    try:
+        params = parse_qs(urlsplit(raw).query, keep_blank_values=True)
+        return str((params.get("dn") or [""])[0]).strip()
+    except Exception:
+        return ""
+
+
 def seedr_task_name(task: dict[str, Any]) -> str:
     nested_torrent = task.get("torrent") if isinstance(task.get("torrent"), dict) else {}
     payload = task.get("torrent_payload") if isinstance(task.get("torrent_payload"), dict) else {}
     meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
+    nested_link = (
+        task.get("torrent_magnet")
+        or task.get("magnet")
+        or task.get("magnet_url")
+        or nested_torrent.get("torrent_magnet")
+        or nested_torrent.get("magnet")
+        or payload.get("torrent_magnet")
+        or payload.get("magnet")
+        or ""
+    )
+    magnet_name = magnet_display_name(nested_link)
 
+    # A magnet's dn is the closest match to the title the user selected from
+    # search. Prefer it before Seedr's own generated/provider title.
     return str(
         task.get("torrent_name")
+        or magnet_name
+        or nested_torrent.get("torrent_name")
+        or payload.get("torrent_name")
         or task.get("torrent_title")
         or task.get("torrentTitle")
-        or task.get("title")
-        or task.get("name")
-        or nested_torrent.get("torrent_name")
         or nested_torrent.get("title")
         or nested_torrent.get("name")
-        or payload.get("torrent_name")
         or payload.get("title")
         or payload.get("name")
+        or task.get("title")
+        or task.get("name")
         or meta.get("torrent_name")
         or meta.get("title")
         or ""
