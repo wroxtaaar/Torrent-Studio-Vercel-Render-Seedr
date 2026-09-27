@@ -279,7 +279,7 @@ export const api = {
     };
   },
 
-  async getSeedrLibrary(): Promise<{
+  async getSeedrLibrary(fresh = false): Promise<{
     configured: boolean;
     root: {
       id: string;
@@ -301,7 +301,7 @@ export const api = {
       folderCount: number;
     }>;
   }> {
-    const res = await apiFetch('/api/seedr/library');
+    const res = await apiFetch('/api/seedr/library' + (fresh ? '?fresh=1' : ''));
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
