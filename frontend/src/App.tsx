@@ -1014,7 +1014,11 @@ export default function App() {
           ...prev,
           name: canonicalName,
           folderId: resolvedFolderId,
-          status: completed ? 'completed' : result.status,
+          // Keep the polling effect alive long enough to fetch the completed
+          // task details and promote the folder into the library. Marking the
+          // notice "completed" here causes React to tear down this effect
+          // immediately, which can abort the rest of the completion flow.
+          status: completed ? 'downloading' : result.status,
           progress: completed ? 100 : progress,
         };
       });
