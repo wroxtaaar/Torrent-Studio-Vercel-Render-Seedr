@@ -2397,33 +2397,6 @@ export default function App() {
                           setIsPlayerMinimized(false);
                         }}
                         streamLoading={f.ownerId === 'seedr' && seedrStreamLoadingId === f.id}
-                          // they used to bypass handleStreamSeedrFile and pass a
-                          // relative /api/seedr/files/stream URL directly to the
-                          // player. That works when the UI is served by Render,
-                          // but breaks on a Vercel frontend because the relative
-                          // URL points at Vercel instead of the Render backend.
-                          // Resolve Seedr streams through the same path used by
-                          // the working folder view so Vercel + Render keeps the
-                          // exact same browser-stream behavior.
-                          if (
-                            f.ownerId === 'seedr' &&
-                            (f.type === 'video' || f.type === 'audio')
-                          ) {
-                            void handleStreamSeedrFile({
-                              id: f.id,
-                              streamId: f.streamId || f.id,
-                              name: f.name,
-                              size: f.size,
-                              folderId: '',
-                              folderPath: f.folder || '/'
-                            });
-                            return;
-                          }
-
-                          setActiveMediaFile(f);
-                          setIsPlayerMinimized(false);
-                        }}
-                        onDelete={handleDeleteFile}
                         onRename={(f) => setRenameItem({ id: f.id, name: f.name, isFolder: false })}
                         onMove={(f) => setMoveFile(f)}
                         canEdit={activeUser?.role !== 'viewer'}
