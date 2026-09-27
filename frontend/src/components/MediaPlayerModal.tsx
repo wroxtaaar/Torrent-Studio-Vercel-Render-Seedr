@@ -48,6 +48,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mediaError, setMediaError] = useState('');
+  const [isSeeking, setIsSeeking] = useState(false);
   const [audioTracks, setAudioTracks] = useState<Array<{
     index: number; language: string; title: string; codec: string; channels: number; default: boolean;
   }>>([]);
@@ -75,6 +76,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setDuration(0);
     setIsPlaying(true);
     setMediaError('');
+    setIsSeeking(false);
     setUsingDirectFallback(false);
     hlsActiveRef.current = false;
   }, [file?.id]);
@@ -139,6 +141,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       // or the first buffer arrived.
       setTrackNotice('');
       setMediaError('');
+      setIsSeeking(false);
       setIsPlaying(true);
       onPlaybackStarted?.();
     };
@@ -284,6 +287,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       code ? `Browser could not play this stream (media error ${code}).` : 'Unable to play this video stream.'
     );
     setTrackNotice('');
+    setIsSeeking(false);
     setIsPlaying(false);
     onPlaybackStarted?.();
   };
@@ -302,15 +306,33 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   // Seek
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
+    const media = mediaRef.current;
+
     setCurrentTime(time);
-    if (mediaRef.current) {
-      mediaRef.current.currentTime = time;
+    setIsSeeking(true);
+    setTrackNotice('Seeking…');
+
+    if (media) {
+      media.currentTime = time;
+
+      // If the video is paused, there will be no "playing" event to dismiss
+      // the loader. The seeked event below handles that case.
+      if (media.paused) {
+        const clearPausedSeek = () => {
+          setIsSeeking(false);
+          setTrackNotice('');
+          media.removeEventListener('seeked', clearPausedSeek);
+        };
+        media.addEventListener('seeked', clearPausedSeek, { once: true });
+      }
     }
   };
 
   // Skip
   const skip = (seconds: number) => {
     if (!mediaRef.current) return;
+    setIsSeeking(true);
+    setTrackNotice('Seeking…');
     mediaRef.current.currentTime = Math.max(0, Math.min(duration, mediaRef.current.currentTime + seconds));
   };
 
@@ -400,6 +422,22 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     }
   };
 
+  // Timeline seeking/buffering
+  const onSeeking = () => {
+    setIsSeeking(true);
+    setTrackNotice('Seeking…');
+  };
+
+  const onSeeked = () => {
+    const media = mediaRef.current;
+    // If playback was paused, "playing" will never arrive to clear the
+    // loader. For active playback, keep it visible until "playing" resumes.
+    if (media?.paused) {
+      setIsSeeking(false);
+      setTrackNotice('');
+    }
+  };
+
   // Time update
   const onTimeUpdate = () => {
     if (mediaRef.current) {
@@ -458,6 +496,13 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
             src={file.streamUrl || file.externalStreamUrl}
             className="w-full h-32 object-contain bg-black rounded-lg"
             onTimeUpdate={onTimeUpdate}
+            onSeeking={onSeeking}
+            onSeeked={onSeeked}
+            onPlaying={() => {
+              setIsSeeking(false);
+              setTrackNotice('');
+              setIsPlaying(true);
+            }}
             onLoadedMetadata={onLoadedMetadata}
             onEnded={() => setIsPlaying(false)}
           />
@@ -612,6 +657,13 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               className="w-full h-full max-h-[60vh] object-contain cursor-pointer"
               onClick={togglePlay}
               onTimeUpdate={onTimeUpdate}
+              onSeeking={onSeeking}
+              onSeeked={onSeeked}
+              onPlaying={() => {
+                setIsSeeking(false);
+                setTrackNotice('');
+                setIsPlaying(true);
+              }}
               onLoadedMetadata={onLoadedMetadata}
               onEnded={() => setIsPlaying(false)}
               onError={handleMediaError}>
