@@ -79,6 +79,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setIsSeeking(false);
     setUsingDirectFallback(false);
     hlsActiveRef.current = false;
+    const initialSubtitles = file?.subtitleTracks || [];
+    setSubtitleTracks(initialSubtitles);
+    setSelectedSubtitleIndex(initialSubtitles[0]?.index);
   }, [file?.id]);
 
   useEffect(() => {
