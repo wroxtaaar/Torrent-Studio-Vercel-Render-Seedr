@@ -557,12 +557,16 @@ async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> N
                     task.cancel()
             await asyncio.gather(remote_task, knaben_task, return_exceptions=True)
 
-            # asyncio.to_thread cannot force-stop the libtorrent worker. Wait for
-            # this attempt to finish so later retry rounds do not overlap it.
-            try:
-                await libtorrent_task
-            except Exception as exc:
-                errors.append(str(exc))
+            # asyncio.to_thread cannot force-stop the libtorrent worker.
+            # When another resolver already won, let that worker finish in the
+            # shared session without delaying the successful response. When the
+            # round failed, wait for it before starting the next retry round so
+            # the same torrent is never added twice concurrently.
+            if winner is None:
+                try:
+                    await libtorrent_task
+                except Exception as exc:
+                    errors.append(str(exc))
 
         if time.time() >= deadline_at:
             break
