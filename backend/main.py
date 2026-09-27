@@ -1980,26 +1980,67 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
 
         return results
 
-    # Knaben is the primary provider. Do not make every search wait for the
-    # secondary Render-hosted aggregator; it has a separate network path and
-    # can occasionally be slow or unavailable. Only use it when the primary
-    # result set is too small.
-    try:
-        knaben_results = await search_knaben(query, limit=limit)
-    except Exception as exc:
-        logger.warning("Primary Knaben search failed for '%s': %s", query, exc)
-        knaben_results = []
+    # Start both search paths together. The old sequential flow could spend
+    # 8.5s waiting on Knaben before even starting the fallback, which made a
+    # perfectly healthy search look stuck. Return the first useful provider
+    # quickly, with a short grace period for the other provider to contribute.
+    knaben_task = asyncio.create_task(search_knaben(query, limit=limit))
+    aggregate_task = asyncio.create_task(
+        asyncio.wait_for(aggregate_fallback(), timeout=5.5)
+    )
 
+    knaben_results: list[dict[str, Any]] = []
     aggregate_results: list[dict[str, Any]] = []
-    if len(knaben_results) < limit:
-        try:
-            aggregate_results = await asyncio.wait_for(
-                aggregate_fallback(),
-                timeout=5.5,
+    pending = {knaben_task, aggregate_task}
+
+    try:
+        while pending:
+            done, pending = await asyncio.wait(
+                pending,
+                return_when=asyncio.FIRST_COMPLETED,
             )
-        except (asyncio.TimeoutError, Exception) as exc:
-            logger.info("Secondary aggregate search skipped/failed for '%s': %s", query, exc)
-            aggregate_results = []
+
+            for task in done:
+                try:
+                    result = await task
+                except (asyncio.TimeoutError, Exception) as exc:
+                    logger.info("Search provider failed for '%s': %s", query, exc)
+                    continue
+
+                if task is knaben_task:
+                    knaben_results = result if isinstance(result, list) else []
+                else:
+                    aggregate_results = result if isinstance(result, list) else []
+
+                # If a provider gave us useful results, give the other provider
+                # a very short opportunity to add/replace results, but don't
+                # make a slow provider hold the search UI open.
+                if result:
+                    if pending:
+                        try:
+                            grace_done, pending_after_grace = await asyncio.wait(
+                                pending,
+                                timeout=0.45,
+                            )
+                            pending = pending_after_grace
+                            for grace_task in grace_done:
+                                try:
+                                    grace_result = await grace_task
+                                except (asyncio.TimeoutError, Exception) as exc:
+                                    logger.info("Search grace provider failed for '%s': %s", query, exc)
+                                    continue
+                                if grace_task is knaben_task:
+                                    knaben_results = grace_result if isinstance(grace_result, list) else []
+                                else:
+                                    aggregate_results = grace_result if isinstance(grace_result, list) else []
+                        except Exception as exc:
+                            logger.info("Search grace period failed for '%s': %s", query, exc)
+                    break
+    finally:
+        for task in (knaben_task, aggregate_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(knaben_task, aggregate_task, return_exceptions=True)
 
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
