@@ -112,89 +112,54 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   }, [file?.id]);
 
   useEffect(() => {
-    const media = mediaRef.current;
-    if (!media || !file) return;
+    if (!file) return;
 
-    // Measure bytes actually transferred by the browser without issuing a
-    // second request (important for high-bandwidth video streams). Because
-    // the player streams through our same-origin backend, Resource Timing can
-    // expose transferSize for the media/range/segment requests.
-    setDownloadSpeedBytes(0);
-    observedDownloadBytesRef.current = 0;
-    observedResourceNamesRef.current = new Set<string>();
+    // Resource Timing is not reliable for long-lived media responses:
+    // browsers can keep transferSize at 0 until a response completes. The
+    // backend therefore reports bytes it is actively proxying and we poll
+    // that tiny stats endpoint once per second.
+    const source = file.streamUrl || file.externalStreamUrl || '';
+    const match = source.match(/\/api\/seedr\/(?:media\/video|hls)\/([^/?#]+)/i);
+    if (!match) {
+      setDownloadSpeedBytes(0);
+      return;
+    }
 
-    const streamStartedAt = performance.now();
+    const fileId = match[1];
+    let statsUrl = `/api/seedr/media/video/${encodeURIComponent(fileId)}/stats`;
     try {
-      performance.setResourceTimingBufferSize?.(1000);
+      const parsed = new URL(source, window.location.origin);
+      parsed.pathname = `/api/seedr/media/video/${encodeURIComponent(fileId)}/stats`;
+      parsed.search = '';
+      statsUrl = parsed.toString();
     } catch {}
 
-    const getMatchingEntries = () => {
-      const source = file.streamUrl || file.externalStreamUrl || '';
-      if (!source) return [] as PerformanceResourceTiming[];
-      let sourceUrl: URL;
+    let cancelled = false;
+    const updateSpeed = async () => {
       try {
-        sourceUrl = new URL(source, window.location.origin);
+        const response = await fetch(statsUrl, { cache: 'no-store' });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled) {
+          const speed = Number(data?.bytesPerSecond);
+          setDownloadSpeedBytes(Number.isFinite(speed) ? Math.max(0, speed) : 0);
+        }
       } catch {
-        return [] as PerformanceResourceTiming[];
-      }
-
-      return performance
-        .getEntriesByType('resource')
-        .filter((entry): entry is PerformanceResourceTiming => {
-          const timing = entry as PerformanceResourceTiming;
-          if (!timing.name || timing.startTime < streamStartedAt) return false;
-          try {
-            const entryUrl = new URL(timing.name, window.location.origin);
-            return entryUrl.origin === sourceUrl.origin &&
-              (entryUrl.pathname === sourceUrl.pathname ||
-                entryUrl.pathname.startsWith(sourceUrl.pathname + '/') ||
-                sourceUrl.pathname.startsWith(entryUrl.pathname + '/'));
-          } catch {
-            return false;
-          }
-        });
-    };
-
-    const updateDownloadStats = () => {
-      let total = 0;
-      for (const entry of getMatchingEntries()) {
-        const entryKey = entry.name + '|' + entry.startTime;
-        if (observedResourceNamesRef.current.has(entryKey)) continue;
-        observedResourceNamesRef.current.add(entryKey);
-        const bytes = Number(entry.transferSize || entry.encodedBodySize || 0);
-        if (bytes > 0) total += bytes;
-      }
-
-      if (total > 0) {
-        observedDownloadBytesRef.current += total;
+        // Keep the last displayed value during a transient stats request.
       }
     };
 
-    // Poll the Resource Timing buffer once per second. This avoids
-    // creating any additional media requests and works for both native
-    // range streaming and HLS segment downloads.
-
-    let previousBytes = 0;
-    let previousTime = performance.now();
-    const tick = () => {
-      updateDownloadStats();
-      const now = performance.now();
-      const currentBytes = observedDownloadBytesRef.current;
-      const elapsed = Math.max(0.25, (now - previousTime) / 1000);
-      const delta = Math.max(0, currentBytes - previousBytes);
-      setDownloadSpeedBytes(delta / elapsed);
-      previousBytes = currentBytes;
-      previousTime = now;
-    };
-
-    tick();
-    downloadSpeedTimerRef.current = window.setInterval(tick, 1000);
+    setDownloadSpeedBytes(0);
+    updateSpeed();
+    downloadSpeedTimerRef.current = window.setInterval(updateSpeed, 1000);
 
     return () => {
+      cancelled = true;
       if (downloadSpeedTimerRef.current !== null) {
         window.clearInterval(downloadSpeedTimerRef.current);
         downloadSpeedTimerRef.current = null;
       }
+      setDownloadSpeedBytes(0);
     };
   }, [file?.id, file?.streamUrl, file?.externalStreamUrl]);
 
@@ -921,7 +886,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           </div>
 
           {/* Main Controls row */}
-          <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center justify-between gap-3 overflow-hidden">
             {/* Left: Playback buttons */}
             <div className="flex items-center gap-2">
               <button
@@ -969,7 +934,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
             </div>
 
             {/* Right: Speed, PiP, Fullscreen */}
-            <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="flex items-center gap-2 flex-nowrap justify-end min-w-0 overflow-x-auto scrollbar-hide">
               {audioTracks.length > 1 && (
                 <label className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2 py-1.5">
                   <Languages className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
@@ -1016,10 +981,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
                     ))}
                   </select>
                 </label>
-              )}
-
-              {trackNotice && (
-                <span className="text-[10px] text-cyan-400 max-w-[140px] truncate">{trackNotice}</span>
               )}
 
               {showDownloadSpeed && (
