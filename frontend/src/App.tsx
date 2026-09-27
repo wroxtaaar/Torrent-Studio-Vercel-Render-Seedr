@@ -1088,7 +1088,10 @@ export default function App() {
             name: canonicalName,
             folderName: '',
             folderId: resolvedFolderId,
-            status: 'completed',
+            // Keep the active library card mounted until the completed folder
+            // has been inserted into seedrLibraryFolders below. Otherwise the
+            // card can disappear for a render while Seedr's library catches up.
+            status: 'downloading',
             progress: 100,
             downloadUrl: result.downloadUrl,
             files: Array.isArray(result.files) && result.files.length > 0 ? result.files : prev.files,
@@ -1177,6 +1180,13 @@ export default function App() {
                 ...prev,
               ];
             });
+
+            // The completed folder is now present in the UI state. Only now
+            // mark the transfer notice completed, so React cannot remove the
+            // active card before the new folder has been mounted.
+            setSeedrNotice(prev => (
+              prev ? { ...prev, status: 'completed', progress: 100 } : null
+            ));
           }
 
           for (let attempt = 0; attempt < 12; attempt += 1) {
