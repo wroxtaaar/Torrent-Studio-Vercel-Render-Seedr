@@ -502,6 +502,15 @@ export const api = {
   },
 
 
+  async getSeedrTokenDiagnostic(): Promise<any> {
+    const res = await apiFetch('/api/seedr/token-diagnostic');
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch { data = null; }
+    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to diagnose Seedr token');
+    return data;
+  },
+
   async getSeedrAuthStatus(): Promise<{
     configured: boolean;
     authenticated: boolean;
