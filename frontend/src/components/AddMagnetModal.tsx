@@ -655,12 +655,13 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     try {
       setIsLoading(true);
       setError('');
-      let selectedBackend: 'seedr' | 'qbittorrent' | undefined;
+      // Default to qBittorrent whenever Seedr quota cannot be verified.
+      // Never fall through to the ordinary Seedr add path after a quota lookup
+      // failure, because that path starts the full torrent.
+      let selectedBackend: 'seedr' | 'qbittorrent' = 'qbittorrent';
       try {
         // Once the user has selected the files, the selected size—not the
         // aggregate torrent size—determines whether Seedr can handle it.
-        // This applies to pasted magnets, search/grab links, and other
-        // sources that qBittorrent can inspect and resolve to an info hash.
         const quota = await api.getSeedrQuota();
         if (
           quota.configured &&
@@ -670,7 +671,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
           selectedBackend = 'seedr';
         }
       } catch {
-        // Quota lookup is best-effort; qBittorrent remains the fallback.
+        // Keep qBittorrent as the safe fallback.
       }
 
       let downloadSource =
@@ -882,8 +883,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
               <div className="font-bold text-amber-300">File selection required</div>
               <p className="mt-1 leading-relaxed">
                 This torrent is <strong>{formatBytes(selectionReason.torrentSize)}</strong>, while Seedr has only <strong>{formatQuotaBytes(selectionReason.remainingSpace)}</strong> free.
-                You can review/select files below, but Seedr does not support transferring only part of a torrent into cloud storage.
-                The selection will not make the Seedr transfer smaller. To add this torrent to Seedr, the full torrent must fit in the remaining space.
+                You can select a subset that fits the remaining space. Torrent Studio will use the selective Seedr path only when the selected files fit; otherwise the safe fallback is qBittorrent.
               </p>
             </div>
           )}
@@ -1121,7 +1121,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
               disabled={
                 isLoading ||
                 isInspecting ||
-                Boolean(selectionReason) ||
+                (Boolean(selectionReason) && totalSelectedSize > selectionReason.remainingSpace) ||
                 (inspectedFiles.length > 0 && selectedCount === 0)
               }
               className="flex-1 sm:flex-none px-4 sm:px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-cyan-500/20"
