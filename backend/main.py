@@ -366,6 +366,166 @@ def _normalize_title(value: str) -> str:
     return " ".join(_search_tokens(value))
 
 
+X1337_HOSTS = [
+    "1337x.to",
+    "1337x.st",
+    "x1337x.ws",
+    "x1337x.eu",
+    "x1337x.cc",
+]
+
+
+def _x1337_rows(html_text: str) -> list[dict[str, str]]:
+    """Parse the 1337x search table without requiring the source's API."""
+    start = html_text.find("table-list")
+    if start < 0:
+        return []
+
+    rows: list[dict[str, str]] = []
+    for tr in html_text[start:].split("<tr")[1:]:
+        link_match = re.search(
+            r'href="(/torrent/[^"]+)"[^>]*>([^<]+)</a>',
+            tr,
+            re.IGNORECASE,
+        )
+        if not link_match:
+            continue
+        size_match = re.search(
+            r'class="coll-4 size[^"]*">\s*([\d.]+\s*[KMGT]i?B)',
+            tr,
+            re.IGNORECASE,
+        )
+        seeds_match = re.search(
+            r'class="coll-2 seeds[^"]*">\s*([\d,]+)',
+            tr,
+            re.IGNORECASE,
+        )
+        leech_match = re.search(
+            r'class="coll-3 leeches[^"]*">\s*([\d,]+)',
+            tr,
+            re.IGNORECASE,
+        )
+        rows.append({
+            "title": BeautifulSoup(
+                html.unescape(link_match.group(2).strip()), "html.parser"
+            ).get_text(" ", strip=True),
+            "path": link_match.group(1),
+            "size": size_match.group(1) if size_match else "0 B",
+            "seeders": (seeds_match.group(1).replace(",", "") if seeds_match else "0"),
+            "leechers": (leech_match.group(1).replace(",", "") if leech_match else "0"),
+        })
+    return rows
+
+
+async def search_1337x_direct(query: str, limit: int = 30) -> list[dict[str, Any]]:
+    """Search 1337x using working hosts, with detail-page magnet resolution."""
+    q, season, episode = _media_search_parts(query)
+    if not q:
+        return []
+
+    encoded = quote(q, safe="").replace("%20", "+")
+    paths = [
+        f"/search/{encoded}/1/",
+        f"/category-search/{encoded}/Movies/1/",
+        f"/category-search/{encoded}/TV/1/",
+    ]
+
+    listing_html = ""
+    base = ""
+    used_path = ""
+    async with httpx.AsyncClient(
+        timeout=12,
+        follow_redirects=True,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    ) as client:
+        for host in X1337_HOSTS:
+            for path in paths:
+                try:
+                    response = await client.get(f"https://{host}{path}")
+                    if response.status_code >= 400:
+                        continue
+                    if "table-list" not in response.text:
+                        continue
+                    listing_html = response.text
+                    base = f"https://{host}"
+                    used_path = path
+                    break
+                except httpx.HTTPError:
+                    continue
+            if listing_html:
+                break
+
+        if not listing_html:
+            return []
+
+        candidates = _x1337_rows(listing_html)
+        tokens = _search_tokens(q)
+        candidates = [
+            row for row in candidates
+            if all(token in _normalize_title(row["title"]) for token in tokens)
+            and _season_episode_match(row["title"], season, episode)
+        ][: min(max(limit, 1), 30)]
+
+        async def fetch_detail(row: dict[str, str]) -> dict[str, Any] | None:
+            try:
+                response = await client.get(base + row["path"])
+                response.raise_for_status()
+            except httpx.HTTPError:
+                return None
+
+            match = re.search(
+                r"magnet:\?xt=urn:btih:[^\"'<>\s]+",
+                response.text,
+                re.IGNORECASE,
+            )
+            if not match:
+                return None
+
+            magnet = html.unescape(match.group(0))
+            try:
+                size_text = row["size"]
+                size_match = re.match(
+                    r"([\d.]+)\s*([KMGT]i?B)",
+                    size_text,
+                    re.IGNORECASE,
+                )
+                units = {"KB": 1024, "KIB": 1024, "MB": 1024**2, "MIB": 1024**2,
+                         "GB": 1024**3, "GIB": 1024**3, "TB": 1024**4, "TIB": 1024**4}
+                size = int(float(size_match.group(1)) * units[size_match.group(2).upper()]) if size_match else 0
+            except Exception:
+                size = 0
+
+            return {
+                "guid": f"1337x-{info_hash(magnet) or row['path']}",
+                "title": row["title"],
+                "size": size,
+                "seeders": int(row["seeders"] or 0),
+                "leechers": int(row["leechers"] or 0),
+                "indexer": "1337x",
+                "protocol": "torrent",
+                "publishDate": "",
+                "magnetUrl": magnet,
+                "infoHash": info_hash(magnet),
+                "downloadUrl": magnet,
+                "infoUrl": base + row["path"],
+                "sourceUrl": base + row["path"],
+                "category": "Video",
+            }
+
+        fetched = await asyncio.gather(*(fetch_detail(row) for row in candidates), return_exceptions=True)
+
+    results = [item for item in fetched if isinstance(item, dict)]
+    logger.info("1337x direct search '%s': %d results via %s", query, len(results), used_path)
+    return results
+
+
 async def search_yts_movies(query: str, limit: int = 50) -> list[dict[str, Any]]:
     """Search YTS directly so movie searches are not lost in aggregate ranking."""
     movie_query = re.sub(
@@ -596,15 +756,18 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"Torrent search service unavailable: {exc}") from exc
 
-    tv_results, movie_results = await asyncio.gather(
+    tv_results, movie_results, x1337_results = await asyncio.gather(
         search_tv_eztv(query, limit=100),
         search_yts_movies(normalized_query, limit=100),
+        search_1337x_direct(query, limit=50),
         return_exceptions=True,
     )
     if isinstance(tv_results, BaseException):
         tv_results = []
     if isinstance(movie_results, BaseException):
         movie_results = []
+    if isinstance(x1337_results, BaseException):
+        x1337_results = []
 
     if response.status_code >= 400:
         detail = response.text.strip()
@@ -648,7 +811,7 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
             continue
         aggregate_items.append(item)
 
-    payload_items = list(tv_results) + list(movie_results) + aggregate_items
+    payload_items = list(tv_results) + list(movie_results) + list(x1337_results) + aggregate_items
 
     results: list[dict[str, Any]] = []
     seen_hashes: set[str] = set()
