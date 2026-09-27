@@ -310,7 +310,7 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
             response = await client.post(
                 search_url,
-                params={"query": query, "max_items": limit},
+                params={"query": query, "max_items": limit, "per_source": 15},
                 headers={"Accept": "application/json"},
             )
     except httpx.HTTPError as exc:
@@ -381,7 +381,7 @@ async def health():
     return {"status": "ok", "seedrConfigured": bool(SEEDR_TOKEN), "torrentSearchApi": TORRENT_SEARCH_API_URL}
 
 @app.get("/api/search")
-async def api_search(q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=20)):
+async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)
 
 @app.get("/api/seedr/quota")
