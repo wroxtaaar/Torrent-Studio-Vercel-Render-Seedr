@@ -9,7 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urljoin, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -240,28 +240,48 @@ def seedr_task_name(task: dict[str, Any]) -> str:
 
 
 def normalize_magnet(magnet: str) -> str:
+    """Normalize the BTIH while preserving the magnet's tracker and name parameters."""
     value = re.sub(r"[\r\n\t]+", "", str(magnet or "").strip())
     decoded = unquote(value)
     if decoded.lower().startswith("magnet:?"):
         value = decoded
     if not value.lower().startswith("magnet:?"):
         return value
+
     try:
         parsed = urlsplit(value)
         params = parse_qs(parsed.query, keep_blank_values=True)
+        valid_hash = ""
         for raw in params.get("xt", []):
             raw = unquote(raw)
-            m = re.fullmatch(r"urn:btih:([A-Za-z0-9]{32,40})", raw, re.I)
-            if not m:
+            match = re.fullmatch(r"urn:btih:([A-Za-z0-9]{32,40})", raw, re.I)
+            if not match:
                 continue
-            h = m.group(1)
-            if len(h) == 32:
-                h = base64.b32decode(h.upper() + "=" * ((8-len(h)%8)%8)).hex()
-            if len(h) == 40 and re.fullmatch(r"[0-9a-fA-F]{40}", h):
-                return "magnet:?xt=urn:btih:" + h.lower()
+            candidate = match.group(1)
+            if len(candidate) == 32:
+                candidate = base64.b32decode(
+                    candidate.upper() + "=" * ((8 - len(candidate) % 8) % 8)
+                ).hex()
+            if len(candidate) == 40 and re.fullmatch(r"[0-9a-fA-F]{40}", candidate):
+                valid_hash = candidate.lower()
+                break
+
+        if not valid_hash:
+            return value
+
+        # Keep the human-readable name and all supplied trackers. Some
+        # metadata-only peers are reachable only through the trackers present
+        # in the original magnet.
+        rebuilt: list[tuple[str, str]] = [("xt", "urn:btih:" + valid_hash)]
+        for key in ("dn", "tr"):
+            for item in params.get(key, []):
+                text_value = str(item or "").strip()
+                if text_value:
+                    rebuilt.append((key, text_value))
+
+        return "magnet:?" + urlencode(rebuilt, doseq=True)
     except Exception:
-        pass
-    return value
+        return value
 
 def info_hash(magnet: str) -> str:
     for _ in range(3):
