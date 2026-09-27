@@ -82,7 +82,7 @@ export default async function handler(req: Request): Promise<Response> {
     });
   }
 
-  const url = new URL(req.url);
+  const url = new URL(req.url, 'http://localhost');
   const query = (url.searchParams.get('q') || '').trim();
   const requestedLimit = parseIntSafe(url.searchParams.get('limit') || '50');
   const limit = Math.min(Math.max(requestedLimit || 50, 1), 50);
