@@ -2896,7 +2896,7 @@ async def seedr_add_selected(request: Request):
     # as in the UI. This prevents stale browser quota data from starting a task
     # whose selected files do not fit.
     try:
-        quota_payload = await seedr_data(await seedr_request("/user"))
+        quota_payload = seedr_data(await seedr_request("/user"))
         storage = quota_payload.get("account", {}).get("storage", {}) if isinstance(quota_payload, dict) else {}
         if not isinstance(storage, dict):
             storage = quota_payload.get("storage", {}) if isinstance(quota_payload, dict) else {}
