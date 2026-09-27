@@ -25,7 +25,7 @@ SEEDR_BASE = "https://www.seedr.cc/api/v0.1/p"
 SEEDR_MEDIA_BASE = "https://www.seedr.cc/api"
 SEEDR_V2_BASE = "https://v2.seedr.cc/api/v0.1/p"
 SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
-SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "").strip()
+SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "0").strip() or "0"
 SEEDR_MAX_SIZE_GB = float(os.getenv("SEEDR_MAX_SIZE_GB", "5"))
 SEEDR_MAX_SIZE_BYTES = int(SEEDR_MAX_SIZE_GB * 1024**3)
 SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "episode", "web", "show", "tv"}
@@ -2280,9 +2280,12 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
         return await _seedr_metadata_task
 
     async def build() -> dict[str, Any]:
+        # Seedr exposes its account root as folder ID 0. Allow an optional
+        # SEEDR_LIBRARY_FOLDER_ID override, but do not require it for the
+        # normal library view.
         root = SEEDR_LIBRARY_FOLDER_ID
         if not root.isdigit():
-            return {"configured": True, "root": None, "folders": []}
+            root = "0"
 
         # Resolve human-readable torrent names from Seedr task metadata in one
         # call. The folder contents/counts and task list are independent, so
