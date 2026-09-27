@@ -420,6 +420,34 @@ export const api = {
       throw new Error('A valid magnet URL is required');
     }
 
+    // For the file-selector flow, always use the experimental selected-file
+    // endpoint so the exact indexes chosen in the UI are sent to Seedr. The
+    // previous /api/seedr/add call ignored selectedFiles and therefore started
+    // a full torrent, defeating the purpose of selective transfer.
+    if (forceBackend === 'seedr' && selectedFiles && selectedFiles.length > 0 && manifest && manifest.length > 0) {
+      const files = manifest.map((file, index) => ({
+        index,
+        name: file.name,
+        size: Number(file.size || 0)
+      }));
+      const selected = selectedFiles.map(Number).filter(Number.isInteger);
+      const data = await api.addSelectedSeedrFiles(
+        magnet,
+        files,
+        selected,
+        torrentName || undefined
+      );
+      return {
+        backend: 'seedr',
+        seedrTaskId: data?.taskId ?? null,
+        seedrResponse: data,
+        seedrFolderName: torrentName || data?.torrentName || null,
+        seedrFolderId: data?.folderId ?? null,
+        selectionApplied: Boolean(data?.writeAccepted),
+        selectionError: data?.writeError || null
+      };
+    }
+
     const size = (manifest || []).reduce((sum, file) => sum + Number(file.size || 0), 0) || undefined;
     const res = await apiFetch(API_BASE + '/api/seedr/add', {
       method: 'POST',
