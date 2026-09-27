@@ -20,7 +20,8 @@ import {
   Minimize2,
   Maximize2,
   Search,
-  Loader2
+  Loader2,
+  Gauge
 } from 'lucide-react';
 import Hls from 'hls.js';
 import { StorageFile } from '../types/index.ts';
@@ -69,12 +70,27 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   const [subtitleSearchLoading, setSubtitleSearchLoading] = useState(false);
   const [subtitleDownloadId, setSubtitleDownloadId] = useState<string | null>(null);
   const [subtitleSearchError, setSubtitleSearchError] = useState('');
+  const [showDownloadSpeed, setShowDownloadSpeed] = useState(() => {
+    try {
+      const saved = localStorage.getItem('torrentStudio.showDownloadSpeed');
+      return saved !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [downloadSpeedBytes, setDownloadSpeedBytes] = useState(0);
+  const [downloadedBytes, setDownloadedBytes] = useState(0);
+
 
   const resumeTimeRef = useRef(0);
   const resumePlayingRef = useRef(false);
   const subtitleTrackRef = useRef<HTMLTrackElement>(null);
   const [usingDirectFallback, setUsingDirectFallback] = useState(false);
   const hlsActiveRef = useRef(false);
+  const observedDownloadBytesRef = useRef(0);
+  const observedResourceNamesRef = useRef(new Set<string>());
+  const downloadSpeedTimerRef = useRef<number | null>(null);
+
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -99,6 +115,99 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   useEffect(() => {
     const media = mediaRef.current;
     if (!media || !file) return;
+
+    // Measure bytes actually transferred by the browser without issuing a
+    // second request (important for high-bandwidth video streams). Because
+    // the player streams through our same-origin backend, Resource Timing can
+    // expose transferSize for the media/range/segment requests.
+    setDownloadSpeedBytes(0);
+    setDownloadedBytes(0);
+    observedDownloadBytesRef.current = 0;
+    observedResourceNamesRef.current = new Set<string>();
+
+    const streamStartedAt = performance.now();
+    try {
+      performance.setResourceTimingBufferSize?.(1000);
+    } catch {}
+
+    const getMatchingEntries = () => {
+      const source = file.streamUrl || file.externalStreamUrl || '';
+      if (!source) return [] as PerformanceResourceTiming[];
+      let sourceUrl: URL;
+      try {
+        sourceUrl = new URL(source, window.location.origin);
+      } catch {
+        return [] as PerformanceResourceTiming[];
+      }
+
+      return performance
+        .getEntriesByType('resource')
+        .filter((entry): entry is PerformanceResourceTiming => {
+          const timing = entry as PerformanceResourceTiming;
+          if (!timing.name || timing.startTime < streamStartedAt) return false;
+          try {
+            const entryUrl = new URL(timing.name, window.location.origin);
+            return entryUrl.origin === sourceUrl.origin &&
+              (entryUrl.pathname === sourceUrl.pathname ||
+                entryUrl.pathname.startsWith(sourceUrl.pathname + '/') ||
+                sourceUrl.pathname.startsWith(entryUrl.pathname + '/'));
+          } catch {
+            return false;
+          }
+        });
+    };
+
+    const updateDownloadStats = () => {
+      let total = 0;
+      for (const entry of getMatchingEntries()) {
+        if (observedResourceNamesRef.current.has(entry.name)) continue;
+        observedResourceNamesRef.current.add(entry.name);
+        const bytes = Number(entry.transferSize || entry.encodedBodySize || 0);
+        if (bytes > 0) total += bytes;
+      }
+
+      if (total > 0) {
+        observedDownloadBytesRef.current += total;
+        setDownloadedBytes(observedDownloadBytesRef.current);
+      }
+    };
+
+    const observer = typeof PerformanceObserver !== 'undefined'
+      ? new PerformanceObserver(() => updateDownloadStats())
+      : null;
+
+    try {
+      observer?.observe({ type: 'resource', buffered: true });
+    } catch {
+      try {
+        observer?.observe({ entryTypes: ['resource'] });
+      } catch {}
+    }
+
+    let previousBytes = 0;
+    let previousTime = performance.now();
+    const tick = () => {
+      updateDownloadStats();
+      const now = performance.now();
+      const currentBytes = observedDownloadBytesRef.current;
+      const elapsed = Math.max(0.25, (now - previousTime) / 1000);
+      const delta = Math.max(0, currentBytes - previousBytes);
+      setDownloadSpeedBytes(delta / elapsed);
+      previousBytes = currentBytes;
+      previousTime = now;
+    };
+
+    tick();
+    downloadSpeedTimerRef.current = window.setInterval(tick, 1000);
+
+    return () => {
+      observer?.disconnect();
+      if (downloadSpeedTimerRef.current !== null) {
+        window.clearInterval(downloadSpeedTimerRef.current);
+        downloadSpeedTimerRef.current = null;
+      }
+    };
+  }, [file?.id, file?.streamUrl, file?.externalStreamUrl]);
 
     setMediaError('');
     setTrackNotice('Preparing browser stream…');
@@ -268,6 +377,20 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const track = subtitleTrackRef.current?.track;
     if (track) track.mode = selectedSubtitleIndex === undefined ? 'disabled' : 'showing';
   }, [selectedSubtitleIndex, subtitleTracks]);
+
+  const formatTransferRate = (bytesPerSecond: number) => {
+    if (!Number.isFinite(bytesPerSecond) || bytesPerSecond < 1024) return '0 KB/s';
+    const units = ['KB/s', 'MB/s', 'GB/s'];
+    let value = bytesPerSecond / 1024;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return value >= 100 ? value.toFixed(0) + ' ' + units[unit] :
+      value >= 10 ? value.toFixed(1) + ' ' + units[unit] :
+      value.toFixed(2) + ' ' + units[unit];
+  };
 
   const openSubtitleSearch = () => {
     if (!file) return;
@@ -905,6 +1028,33 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               {trackNotice && (
                 <span className="text-[10px] text-cyan-400 max-w-[140px] truncate">{trackNotice}</span>
               )}
+
+              {showDownloadSpeed && (
+                <div
+                  className="flex items-center gap-1.5 rounded-lg bg-slate-800/80 px-2 py-1.5 text-[11px] text-slate-300"
+                  title="Approximate browser download rate for this stream"
+                >
+                  <Gauge className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>↓ {formatTransferRate(downloadSpeedBytes)}</span>
+                </div>
+              )}
+
+              <button
+                onClick={() => {
+                  setShowDownloadSpeed(current => {
+                    const next = !current;
+                    try {
+                      localStorage.setItem('torrentStudio.showDownloadSpeed', String(next));
+                    } catch {}
+                    return next;
+                  });
+                }}
+                className={`p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 transition ${showDownloadSpeed ? 'text-cyan-400' : 'text-slate-500'}`}
+                title={showDownloadSpeed ? 'Hide download speed' : 'Show download speed'}
+                aria-label={showDownloadSpeed ? 'Hide download speed' : 'Show download speed'}
+              >
+                <Gauge className="w-4 h-4" />
+              </button>
 
               {/* Playback Speed selector */}
               <div className="flex items-center bg-slate-800/80 rounded-lg p-0.5 text-xs font-medium text-slate-300">
