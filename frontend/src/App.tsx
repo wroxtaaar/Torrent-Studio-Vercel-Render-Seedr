@@ -598,6 +598,16 @@ export default function App() {
     seedrNotice?.taskId != null && seedrNotice.status !== 'completed'
   );
 
+  const openMetadataSelector = useCallback((source: string) => {
+    const value = String(source || '').trim();
+    if (!value) return;
+    setInitialMagnet(value);
+    setInitialSourceUrl('');
+    setInitialDescriptorUrl('');
+    setBackgroundMetadataJob(null);
+    setIsAddMagnetOpen(true);
+  }, []);
+
   const openAddMagnet = useCallback((source = '', sourceUrl = '', descriptorUrl = '') => {
     if (seedrDownloadActive) {
       setSeedrAddBlockedNotice(
@@ -2565,7 +2575,7 @@ export default function App() {
                           const source = backgroundMetadataJob.hash
                             ? 'magnet:?xt=urn:btih:' + backgroundMetadataJob.hash
                             : '';
-                          openAddMagnet(source);
+                          openMetadataSelector(source);
                           setActiveTab('files');
                         }}
                         className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold"
