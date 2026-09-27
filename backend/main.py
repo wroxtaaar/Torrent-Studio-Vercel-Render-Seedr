@@ -135,7 +135,8 @@ class MagnetRequest(BaseModel):
     folder_id: str | int | None = None
     torrent_name: str | None = None
     size: int | float | None = None
-    selected_indexes: list[int] | None = None
+    # Browser clients may serialize indexes as strings; normalize them in the endpoint.
+    selected_indexes: list[int | str] | None = None
     manifest: list[dict[str, Any]] | None = None
 
 
@@ -2701,11 +2702,15 @@ async def seedr_add(body: MagnetRequest):
         raise HTTPException(400, "A valid BTIH magnet link is required")
 
     manifest = body.manifest if isinstance(body.manifest, list) else []
-    selected_indexes = sorted({
-        int(index)
-        for index in (body.selected_indexes or [])
-        if isinstance(index, int) and index >= 0
-    })
+    selected_indexes: list[int] = []
+    for raw_index in (body.selected_indexes or []):
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if index >= 0:
+            selected_indexes.append(index)
+    selected_indexes = sorted(set(selected_indexes))
 
     # Metadata-first flow: the browser already resolved the torrent metadata
     # without starting Seedr. For selective Seedr downloads, quota is checked
