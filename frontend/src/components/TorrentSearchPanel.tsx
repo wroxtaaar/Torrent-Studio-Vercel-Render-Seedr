@@ -37,7 +37,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
   const [addingTorrentKey, setAddingTorrentKey] = useState<string | null>(null);
   const recentSearchRef = useRef<HTMLDivElement | null>(null);
   const apiFetchRecent = (input: RequestInfo | URL, init?: RequestInit) => {
-    const base = (String(import.meta.env.VITE_API_URL || '').trim() || 'https://torrent-studio-vercel-render-seedr.onrender.com').replace(/\/+$/, '');
+    const base = (String(import.meta.env.VITE_API_URL || '').trim() || 'https://torrent-studio-vercel-render-seedr-26fd.onrender.com').replace(/\/+$/, '');
     const value = String(input);
     return fetch(value.startsWith('/') ? base + value : value, init);
   };
