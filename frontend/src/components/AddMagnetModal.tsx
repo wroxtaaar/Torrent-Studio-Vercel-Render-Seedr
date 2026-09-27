@@ -183,7 +183,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       if (fileSize > 0) {
         try {
           const quota = await api.getSeedrQuota();
-          if (quota.configured && fileSize < quota.remainingSpace) {
+          if (quota.configured && fileSize <= quota.remainingSpace) {
             forceBackend = 'seedr';
           }
         } catch {
