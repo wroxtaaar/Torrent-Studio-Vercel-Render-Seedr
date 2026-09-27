@@ -393,15 +393,6 @@ export const api = {
     }
 
     let taskId = data?.task_id ?? data?.id ?? data?.task?.id ?? data?.task?.task_id ?? null;
-    if (taskId == null) {
-      try {
-        const taskRes = await apiFetch('/api/seedr/tasks');
-        const taskBody = await taskRes.json().catch(() => null);
-        const tasks = Array.isArray(taskBody) ? taskBody : (Array.isArray(taskBody?.tasks) ? taskBody.tasks : []);
-        const latest = tasks[0];
-        taskId = latest?.id ?? latest?.task_id ?? latest?.taskId ?? null;
-      } catch {}
-    }
     return {
       backend: 'seedr',
       seedrTaskId: taskId,
