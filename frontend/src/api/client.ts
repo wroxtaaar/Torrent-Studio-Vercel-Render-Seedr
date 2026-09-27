@@ -63,7 +63,7 @@ export const api = {
     return Array.isArray(data) ? data : (Array.isArray(data?.results) ? data.results : []);
   },
 
-  async addSearchTorrent(source: string, size: number, infoHash?: string): Promise<any> {
+  async addSearchTorrent(source: string, size: number, infoHash?: string, torrentName?: string): Promise<any> {
     const magnet = source.trim();
     const resolvedMagnet =
       magnet.toLowerCase().startsWith('magnet:?')
@@ -75,7 +75,7 @@ export const api = {
     const res = await apiFetch('/api/search/torrents/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: resolvedMagnet, size, infoHash })
+      body: JSON.stringify({ source: resolvedMagnet, size, infoHash, torrent_name: torrentName || undefined })
     });
     const body = await res.text();
     let data: any = null;
