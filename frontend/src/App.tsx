@@ -82,6 +82,15 @@ export default function App() {
       return 'search';
     }
   });
+  const [backgroundMetadataJob, setBackgroundMetadataJob] = useState<{
+    active: boolean;
+    title: string;
+    message: string;
+    ready?: boolean;
+    error?: string;
+  } | null>(null);
+  const [initialSourceUrl, setInitialSourceUrl] = useState('');
+
   const [theme, setTheme] = useState<'dark' | 'dim' | 'light'>(() => {
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
@@ -458,7 +467,7 @@ export default function App() {
     seedrNotice?.taskId != null && seedrNotice.status !== 'completed'
   );
 
-  const openAddMagnet = useCallback((source = '') => {
+  const openAddMagnet = useCallback((source = '', sourceUrl = '') => {
     if (seedrDownloadActive) {
       setSeedrAddBlockedNotice(
         'A Seedr download is already in progress. Free Seedr accounts allow one parallel download. Wait for it to finish before adding another magnet link.'
@@ -469,6 +478,7 @@ export default function App() {
     }
 
     setInitialMagnet(source);
+    setInitialSourceUrl(sourceUrl);
     setIsAddMagnetOpen(true);
   }, [seedrDownloadActive]);
 
@@ -746,67 +756,23 @@ export default function App() {
     });
   }, []);
 
-  const handleSearchAdd = async (source: string, size: number, title: string, infoHash?: string) => {
+  const handleSearchAdd = async (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string) => {
     const trimmedSource = source.trim();
     const seedrSource =
       trimmedSource.toLowerCase().startsWith('magnet:?')
         ? trimmedSource
         : infoHash
           ? `magnet:?xt=urn:btih:${infoHash.trim()}`
-          : '';
+          : trimmedSource;
 
-    if (seedrDownloadActive) {
-      setSeedrAddBlockedNotice(
-        'A Seedr download is already in progress. Free Seedr accounts allow one parallel download. Wait for it to finish before adding another magnet link.'
-      );
-      setActiveTab('files');
-      window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
+    if (!seedrSource) {
+      openAddMagnet(source, sourceUrl);
       return;
     }
 
-    // Always check Seedr's live quota before deciding whether a search
-    // result can be added directly. The general storage stats can be stale
-    // after another Seedr file is added/deleted.
-    if (seedrSource && Number(size) > 0) {
-      try {
-        const quota = await api.getSeedrQuota();
-        const remainingSpace = Number(quota.remainingSpace || 0);
-        const torrentSize = Number(size) || 0;
-
-        if (quota.configured && torrentSize > remainingSpace) {
-          setSeedrSelectionContext({
-            remainingSpace,
-            torrentSize,
-            torrentName: title,
-          });
-          setSeedrAddBlockedNotice(
-            `This torrent is ${formatBytes(torrentSize)} but Seedr has ${formatQuotaBytes(remainingSpace)} remaining. Review the files before continuing.`
-          );
-          openAddMagnet(seedrSource);
-          return;
-        }
-      } catch {
-        // Let the backend perform the authoritative quota check when the
-        // live quota endpoint is temporarily unavailable.
-      }
-
-      await handleAddMagnet(
-        seedrSource,
-        'Downloads',
-        undefined,
-        undefined,
-        undefined,
-        'seedr',
-        undefined,
-        undefined,
-        title
-      );
-      return;
-    }
-
-    // If the search result has no usable magnet/hash, keep the existing
-    // selector flow as the safe fallback.
-    openAddMagnet(source);
+    // Search results now use the same safe metadata-first flow as pasted
+    // magnets. Nothing is sent to Seedr until the user sees the file list.
+    openAddMagnet(seedrSource, sourceUrl);
   };
 
   const handleAddMagnet = async (
@@ -1854,6 +1820,35 @@ export default function App() {
           <div className="space-y-4">
             {/* Persistent Seedr Library */}
             <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/20">
+              {backgroundMetadataJob && (
+                <div className={`mb-3 rounded-xl border px-3 py-3 ${backgroundMetadataJob.error ? 'border-rose-500/30 bg-rose-500/10' : backgroundMetadataJob.ready ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-cyan-500/30 bg-cyan-500/10'}`}>
+                  <div className="flex items-center gap-3">
+                    <Loader2 className={`w-5 h-5 shrink-0 ${backgroundMetadataJob.ready ? 'text-emerald-400' : backgroundMetadataJob.error ? 'text-rose-400' : 'text-cyan-400 animate-spin'}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-slate-100">{backgroundMetadataJob.title}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">{backgroundMetadataJob.message}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddMagnetOpen(true);
+                        setActiveTab('files');
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold"
+                    >
+                      Open
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBackgroundMetadataJob(null)}
+                      className="p-1 rounded-lg text-slate-500 hover:text-slate-200"
+                      aria-label="Dismiss metadata status"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              )}
               {seedrDeleteNotice && (
                 <div className="mb-3 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">
                   <CheckCircle2 className="w-4 h-4" />
@@ -2529,14 +2524,23 @@ export default function App() {
         onClose={() => {
           setIsAddMagnetOpen(false);
           setInitialMagnet('');
+          setInitialSourceUrl('');
           setSeedrSelectionContext(null);
         }}
         onOpen={() => {
           openAddMagnet(initialMagnet);
         }}
         onAdd={handleAddMagnet}
+        onBackgroundChange={(state) => {
+          setBackgroundMetadataJob(state);
+          if (state.active) {
+            setActiveTab('files');
+            setIsAddMagnetOpen(false);
+          }
+        }}
         defaultFolder={currentFolder === '/' ? 'Downloads' : currentFolder.replace('/', '')}
         initialMagnet={initialMagnet}
+        initialSourceUrl={initialSourceUrl}
         selectionReason={seedrSelectionContext}
       />
 
