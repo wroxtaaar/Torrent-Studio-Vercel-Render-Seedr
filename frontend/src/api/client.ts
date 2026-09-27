@@ -200,8 +200,22 @@ export const api = {
       totalSize: 0,
       source: 'libtorrent_metadata',
       pending: true,
+      jobId,
       message: 'Torrent metadata is still resolving in the background. Seedr has not been started.'
     };
+  },
+
+  async getTorrentMetadataStatus(jobId: string): Promise<any> {
+    const res = await apiFetch(
+      '/api/v2/torrents/inspect-magnet/status?jobId=' + encodeURIComponent(jobId)
+    );
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || body || 'Torrent metadata status failed');
+    }
+    return data;
   },
 
   async uploadTorrentFile(file: File): Promise<{
