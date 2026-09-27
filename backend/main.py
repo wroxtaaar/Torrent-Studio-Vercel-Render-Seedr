@@ -2479,6 +2479,32 @@ def _libtorrent_metadata_sync(magnet: str) -> tuple[str, str, list[dict[str, Any
     handle = None
     try:
         ses = lt.session()
+
+        # Explicitly enable the discovery paths needed for magnet metadata on
+        # a cloud host. Keep UPnP/NAT-PMP/LSd off: they are not useful on
+        # Render and can add connection delay. DHT + tracker access remain on.
+        ses.apply_settings({
+            "enable_dht": True,
+            "enable_lsd": False,
+            "enable_upnp": False,
+            "enable_natpmp": False,
+            "enable_outgoing_tcp": True,
+            "enable_outgoing_utp": True,
+            "enable_incoming_tcp": True,
+            "enable_incoming_utp": True,
+            "listen_interfaces": "0.0.0.0:0",
+            "dht_bootstrap_nodes": (
+                "router.bittorrent.com:6881,"
+                "router.utorrent.com:6881,"
+                "dht.transmissionbt.com:6881"
+            ),
+            "use_dht_as_fallback": False,
+            "announce_to_all_trackers": True,
+            "announce_to_all_tiers": True,
+            "connection_speed": 50,
+            "handshake_timeout": 10,
+        })
+
         atp = lt.parse_magnet_uri(magnet)
         atp.save_path = tmp
 
@@ -2493,6 +2519,10 @@ def _libtorrent_metadata_sync(magnet: str) -> tuple[str, str, list[dict[str, Any
         while time.monotonic() < deadline:
             if handle.has_metadata():
                 break
+            for alert in ses.pop_alerts():
+                message = str(alert)
+                if "error" in message.lower() or "tracker" in message.lower() or "dht" in message.lower():
+                    logger.info("libtorrent alert for %s: %s", info_hash(magnet), message[:500])
             time.sleep(0.15)
 
         if not handle.has_metadata():
