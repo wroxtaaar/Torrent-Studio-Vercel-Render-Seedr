@@ -580,6 +580,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         const quota = await api.getSeedrQuota();
         if (
           quota.configured &&
+          selectedFileIndexes.length === inspectedFiles.length &&
           totalTorrentSize > 0 &&
           totalTorrentSize <= quota.remainingSpace
         ) {
@@ -933,6 +934,9 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                 <span>
                   Selected Download Size: <strong className="text-cyan-400 font-mono">{formatBytes(totalSelectedSize)}</strong> / {formatBytes(totalTorrentSize)} total
                 </span>
+              </div>
+              <div className="px-3 py-2 bg-slate-900/60 border-t border-slate-800 text-[10px] text-slate-500">
+                Seedr can only receive the complete torrent. If you skip any file, Torrent Studio uses qBittorrent so only the checked files are downloaded.
               </div>
 
               </div>
