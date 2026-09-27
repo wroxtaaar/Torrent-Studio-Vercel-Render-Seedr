@@ -578,7 +578,7 @@ export const api = {
 
   openSeedrFileDownload(fileId: string, filename = ''): void {
     const query = filename ? '?filename=' + encodeURIComponent(filename) : '';
-    const url = '/api/seedr/files/' + encodeURIComponent(fileId) + '/download/direct' + query;
+    const url = '/api/seedr/files/' + encodeURIComponent(fileId) + '/download' + query;
     window.open(API_BASE + url, '_blank', 'noopener,noreferrer');
   },
 
@@ -614,7 +614,7 @@ export const api = {
 
   openSeedrFolderDownload(folderId: string, filename = ''): void {
     const query = filename ? '?filename=' + encodeURIComponent(filename) : '';
-    const url = '/api/seedr/folders/' + encodeURIComponent(folderId) + '/download/direct' + query;
+    const url = '/api/seedr/folders/' + encodeURIComponent(folderId) + '/download' + query;
     window.open(API_BASE + url, '_blank', 'noopener,noreferrer');
   },
 
