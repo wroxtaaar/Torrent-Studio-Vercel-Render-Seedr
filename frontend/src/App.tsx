@@ -152,7 +152,7 @@ export default function App() {
     };
 
     void poll();
-    const timer = window.setInterval(() => { void poll(); }, 2500);
+    const timer = window.setInterval(() => { void poll(); }, 5000);
     return () => {
       stopped = true;
       window.clearInterval(timer);
@@ -182,7 +182,7 @@ export default function App() {
     void refreshBackgroundMetadataJobs();
     const timer = window.setInterval(
       () => { void refreshBackgroundMetadataJobs(); },
-      hasActiveBackgroundMetadataJobs ? 3000 : 15000
+      hasActiveBackgroundMetadataJobs ? 5000 : 30000
     );
     return () => window.clearInterval(timer);
   }, [refreshBackgroundMetadataJobs, hasActiveBackgroundMetadataJobs]);
@@ -948,12 +948,17 @@ export default function App() {
     };
 
     pollTorrents();
-    const interval = setInterval(pollTorrents, 1800);
+    const interval = setInterval(pollTorrents, torrents.some(t =>
+      t.state === 'downloading' ||
+      t.state === 'pausedDL' ||
+      t.state === 'queuedDL' ||
+      t.progress < 1
+    ) ? 5000 : 20000);
     return () => {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [currentFolder]);
+  }, [currentFolder, torrents.length]);
 
   // Actions
   const appendActivityLog = useCallback((log: ActivityLog) => {
@@ -989,7 +994,7 @@ export default function App() {
     magnet: string,
     category: string,
     selectedFiles?: number[],
-    manifest?: { name: string; size: number; priority: number }[],
+    manifest?: { index?: number; name: string; size: number; priority: number }[],
     existingHash?: string,
     forceBackend?: 'seedr' | 'qbittorrent',
     selectedNames?: string[],
@@ -1225,7 +1230,7 @@ export default function App() {
         if (!completed) {
           // Poll frequently so the visible progress bar moves as soon as Seedr
           // reports a newer value.
-          scheduleNextPoll(1000);
+          scheduleNextPoll(progressResult.status === 'waiting' ? 10000 : 4000);
           return;
         }
 
@@ -1655,11 +1660,19 @@ export default function App() {
   };
 
   const handleDownloadSeedrFile = async (fileId: string, fileName = '') => {
+    const popup = window.open('', '_blank', 'noopener,noreferrer');
     try {
-      // Start the browser navigation synchronously; backend streams the Seedr
-      // file with Content-Disposition preserving the real filename/extension.
-      api.openSeedrFileDownload(fileId, fileName);
+      // Resolve the temporary Seedr URL only because the user clicked Download.
+      // The final transfer then goes directly from Seedr to the browser.
+      const result = await api.getSeedrFileDownload(fileId);
+      const target = result.url;
+      if (popup) {
+        popup.location.href = target;
+      } else {
+        window.location.href = target;
+      }
     } catch (error) {
+      if (popup) popup.close();
       console.error('Failed to start Seedr download:', error);
       setSeedrError(error instanceof Error ? error.message : 'Failed to start Seedr download');
     }
@@ -1742,6 +1755,10 @@ export default function App() {
           return window.location.origin;
         }
       })();
+      const streamUrl =
+        result.protocol === 'direct' && result.externalUrl
+          ? result.externalUrl
+          : result.url;
       const subtitleTracks = type === 'video'
         ? findSeedrSubtitleTracks(file, apiOrigin)
         : [];
@@ -1757,7 +1774,7 @@ export default function App() {
         ownerId: activeUser?.id || 'user_admin',
         ownerName: activeUser?.name || 'Admin',
         isStreamable: true,
-        streamUrl: result.url,
+        streamUrl,
         externalStreamUrl: result.externalUrl,
         subtitleTracks,
         downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
