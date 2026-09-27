@@ -531,6 +531,21 @@ export default function App() {
     setSeedrError(null);
 
     try {
+      // Keep the Seedr storage/quota cards populated independently of the
+      // library metadata request. Quota is small and should never delay the
+      // library UI or the download progress bar.
+      void api.getSeedrQuota().then(quota => {
+        if (!quota.configured) return;
+        setSeedrQuota({
+          maxSpace: quota.maxSpace,
+          usedSpace: quota.usedSpace,
+          remainingSpace: quota.remainingSpace,
+        });
+      }).catch(() => {
+        // Preserve the last known quota instead of showing a misleading
+        // unavailable warning.
+      });
+
       // Refresh the active transfer progress independently of library
       // metadata. This request is intentionally tiny, so the progress bar can
       // move immediately instead of waiting for the library tree.
