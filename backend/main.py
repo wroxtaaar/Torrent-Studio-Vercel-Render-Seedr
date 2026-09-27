@@ -383,20 +383,58 @@ def _metadata_from_libtorrent_sync(magnet: str, info_hash_value: str) -> dict[st
 
 
 async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> None:
+    """Resolve metadata in parallel so a slow DHT lookup cannot block a faster resolver."""
     job = _metadata_jobs[job_id]
     job["status"] = "resolving"
-    try:
+
+    async def resolve_libtorrent() -> dict[str, Any] | None:
         session = await _get_libtorrent_session()
-        result = await asyncio.to_thread(_metadata_from_libtorrent_sync, magnet, info_hash_value)
-        _metadata_cache[info_hash_value.lower()] = result
-        _save_metadata_cache()
-        job.update({"status": "ready", "result": result})
-    except TimeoutError as exc:
-        job.update({"status": "resolving", "error": str(exc)})
-        logger.info("Metadata job %s still resolving: %s", job_id, exc)
-    except Exception as exc:
-        job.update({"status": "error", "error": str(exc)})
-        logger.warning("Metadata job %s failed: %s", job_id, exc)
+        return await asyncio.to_thread(
+            _metadata_from_libtorrent_sync,
+            magnet,
+            info_hash_value,
+        )
+
+    remote_task = asyncio.create_task(
+        _fetch_remote_torrent_metadata(magnet, info_hash_value)
+    )
+    libtorrent_task = asyncio.create_task(resolve_libtorrent())
+
+    errors: list[str] = []
+    try:
+        # Whichever resolver gets metadata first wins. The remote resolver is
+        # useful on Render because it has its own DHT/peer connectivity; the
+        # local resolver remains as a fallback for magnets it cannot resolve.
+        for task in asyncio.as_completed((remote_task, libtorrent_task)):
+            try:
+                result = await task
+            except TimeoutError as exc:
+                errors.append(str(exc))
+                continue
+            except Exception as exc:
+                errors.append(str(exc))
+                continue
+
+            if result and isinstance(result, dict) and result.get("files"):
+                _metadata_cache[info_hash_value.lower()] = result
+                _save_metadata_cache()
+                job.update({"status": "ready", "result": result, "error": None})
+                logger.info(
+                    "Metadata job %s resolved via %s",
+                    job_id,
+                    result.get("source", "unknown"),
+                )
+                return
+
+        message = errors[-1] if errors else "No metadata resolver returned a file list."
+        job.update({"status": "error", "error": message})
+        logger.warning("Metadata job %s failed: %s", job_id, message)
+    finally:
+        # A cancelled HTTP request is safe to stop. A libtorrent thread may
+        # still finish in the executor, so do not tear down the shared session.
+        for task in (remote_task, libtorrent_task):
+            if not task.done() and task is remote_task:
+                task.cancel()
 
 
 _load_metadata_cache()
@@ -3045,11 +3083,13 @@ def _libtorrent_metadata_sync(magnet: str) -> tuple[str, str, list[dict[str, Any
 
 
 async def _fetch_remote_torrent_metadata(magnet: str, info_hash_value: str) -> dict[str, Any] | None:
-    """Use a dedicated metadata-only service as a fast fallback for magnets."""
+    """Use the public torrent-metadata resolver as a metadata-only fallback."""
     if not TORRENT_METADATA_API_URL:
         return None
     try:
-        async with httpx.AsyncClient(timeout=7.0, follow_redirects=True) as client:
+        # This service resolves BEP-9 metadata from a magnet without starting
+        # a file download. Give Fly.io enough time to wake a sleeping instance.
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             response = await client.post(
                 TORRENT_METADATA_API_URL.rstrip("/") + "/",
                 json={"query": magnet},
