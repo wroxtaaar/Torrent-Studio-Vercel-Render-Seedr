@@ -756,7 +756,7 @@ export default function App() {
       setSeedrAddBlockedNotice(
         'A Seedr download is already in progress. Free Seedr accounts allow one parallel download. Wait for it to finish before adding another magnet link.'
       );
-      setActiveTab('transfers');
+      setActiveTab('files');
       window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
       return;
     }
