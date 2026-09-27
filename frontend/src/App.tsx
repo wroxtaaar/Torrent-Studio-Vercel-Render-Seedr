@@ -492,6 +492,26 @@ export default function App() {
     setSeedrError(null);
 
     try {
+      // Refresh the active transfer progress independently of library
+      // metadata. This request is intentionally tiny, so the progress bar can
+      // move immediately instead of waiting for the library tree.
+      const activeTaskId = seedrNotice?.taskId;
+      if (activeTaskId && seedrNotice?.status !== 'completed') {
+        void api.getSeedrTaskProgress(activeTaskId).then(progressResult => {
+          if (progressResult.status === 'not_found') return;
+          const progress = Math.max(0, Math.min(100, Number(progressResult.progress) || 0));
+          setSeedrNotice(prev => prev ? {
+            ...prev,
+            name: String(progressResult.name || prev.name),
+            folderId: String(progressResult.folderId || prev.folderId || '').trim(),
+            status: progressResult.status,
+            progress,
+          } : null);
+        }).catch(() => {
+          // The normal task poll continues to provide progress updates.
+        });
+      }
+
       // Stage 1 — only the metadata required to paint the outer Seedr
       // Library immediately. Do not wait for quota or file rows.
       const result = await api.getSeedrLibrary();
@@ -903,16 +923,39 @@ export default function App() {
       timeoutId = window.setTimeout(poll, delayMs);
     };
 
+    const applyProgress = (result: {
+      status: 'waiting' | 'downloading' | 'completed' | 'not_found';
+      progress: number;
+      name?: string;
+      folderId?: string;
+    }) => {
+      const progress = Math.max(0, Math.min(100, Number(result.progress) || 0));
+      const completed = result.status === 'completed';
+
+      setSeedrNotice(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          name: String(result.name || prev.name),
+          folderId: String(result.folderId || prev.folderId || '').trim(),
+          status: completed ? 'completed' : result.status,
+          progress: completed ? 100 : progress,
+        };
+      });
+
+      return completed;
+    };
+
     const poll = async () => {
       if (!active) return;
 
       try {
-        const result = await api.getSeedrTask(seedrNotice.taskId!);
+        // This endpoint only asks Seedr for task state/progress, so it is much
+        // faster than loading task contents, folder names, and file URLs.
+        const progressResult = await api.getSeedrTaskProgress(seedrNotice.taskId!);
         if (!active) return;
 
-        // Seedr returning 404 means the task is gone. Clear the stale
-        // frontend state so it cannot survive through localStorage.
-        if (result.status === 'not_found') {
+        if (progressResult.status === 'not_found') {
           setSeedrNotice(null);
           setSeedrAddBlockedNotice(null);
           try {
@@ -921,53 +964,38 @@ export default function App() {
           return;
         }
 
-        const progress = Number(result.progress) || 0;
-        const completed = result.status === 'completed';
+        const completed = applyProgress(progressResult);
+
+        if (!completed) {
+          // Poll frequently so the visible progress bar moves as soon as Seedr
+          // reports a newer value.
+          scheduleNextPoll(1000);
+          return;
+        }
+
+        // Only when complete do we make the heavier request for the final
+        // files/download URLs before promoting the task into the library.
+        const result = await api.getSeedrTask(seedrNotice.taskId!);
+        if (!active) return;
 
         setSeedrNotice(prev => {
           if (!prev) return null;
           return {
             ...prev,
-            name: String(
-              (result as any).name ??
-              (result as any).task?.name ??
-              (result as any).task?.title ??
-              prev.name
-            ),
-            folderName: String(
-              (result as any).folderName ??
-              prev.folderName ??
-              (result as any).name ??
-              prev.name
-            ).trim(),
-            folderId: String(
-              (result as any).folderId ??
-              prev.folderId ??
-              ''
-            ).trim(),
-            status: completed ? 'completed' : result.status,
-            progress: completed ? 100 : progress,
+            name: String((result as any).name || prev.name),
+            folderName: String((result as any).folderName || prev.folderName || (result as any).name || prev.name).trim(),
+            folderId: String((result as any).folderId || prev.folderId || '').trim(),
+            status: 'completed',
+            progress: 100,
             downloadUrl: result.downloadUrl,
-            // Keep optimistic manifest rows until Seedr exposes real files.
-            files: Array.isArray(result.files) && result.files.length > 0
-              ? result.files
-              : prev.files,
+            files: Array.isArray(result.files) && result.files.length > 0 ? result.files : prev.files,
           };
         });
 
-        if (!completed) {
-          // Keep the transfer display close to Seedr's live progress. Poll
-          // every 2 seconds while active, including near completion.
-          scheduleNextPoll(2000);
-        } else {
-          // Promote the completed Seedr task into the persistent library
-          // immediately; the temporary progress card will disappear shortly.
-          void loadSeedrLibrary();
-          setActiveSeedrFolderOpen(false);
-        }
+        void loadSeedrLibrary();
+        setActiveSeedrFolderOpen(false);
       } catch {
-        // Keep the current status and retry after the normal interval.
-        scheduleNextPoll(5000);
+        scheduleNextPoll(2500);
       }
     };
 
