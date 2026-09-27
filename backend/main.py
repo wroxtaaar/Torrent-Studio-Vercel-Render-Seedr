@@ -1117,7 +1117,9 @@ async def search_knaben(query: str, limit: int = 100) -> list[dict[str, Any]]:
         return []
 
     target_tokens = _search_tokens(title_query)
-    request_size = min(max(limit, 50), 300)
+    # Keep the full Knaben candidate pool. The previous working Vercel
+    # implementation requested 300 before applying local filtering.
+    request_size = 300
 
     body = {
         "search_type": "100%",
@@ -1144,8 +1146,14 @@ async def search_knaben(query: str, limit: int = 100) -> list[dict[str, Any]]:
             )
             response.raise_for_status()
             payload = response.json()
+            logger.info(
+                "Knaben HTTP %s for '%s': %d hits",
+                response.status_code,
+                query,
+                len(payload.get("hits", [])) if isinstance(payload, dict) and isinstance(payload.get("hits"), list) else 0,
+            )
     except (httpx.HTTPError, ValueError) as exc:
-        logger.info("Knaben search failed: %s", exc)
+        logger.warning("Knaben search failed for '%s': %s", query, exc)
         return []
 
     hits = payload.get("hits") if isinstance(payload, dict) else None
