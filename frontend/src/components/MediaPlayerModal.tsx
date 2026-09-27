@@ -170,17 +170,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       }
     };
 
-    const observer = typeof PerformanceObserver !== 'undefined'
-      ? new PerformanceObserver(() => updateDownloadStats())
-      : null;
-
-    try {
-      observer?.observe({ type: 'resource', buffered: true });
-    } catch {
-      try {
-        observer?.observe({ entryTypes: ['resource'] });
-      } catch {}
-    }
+    // Poll the Resource Timing buffer once per second. This avoids
+    // creating any additional media requests and works for both native
+    // range streaming and HLS segment downloads.
 
     let previousBytes = 0;
     let previousTime = performance.now();
@@ -199,7 +191,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     downloadSpeedTimerRef.current = window.setInterval(tick, 1000);
 
     return () => {
-      observer?.disconnect();
       if (downloadSpeedTimerRef.current !== null) {
         window.clearInterval(downloadSpeedTimerRef.current);
         downloadSpeedTimerRef.current = null;
