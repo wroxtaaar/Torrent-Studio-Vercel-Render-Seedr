@@ -2857,7 +2857,6 @@ async def seedr_video_media(file_id: str, request: Request):
     )
 
 
-NaN
 async def seedr_audio_media(file_id: str, request: Request):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
