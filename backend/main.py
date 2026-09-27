@@ -1664,9 +1664,14 @@ async def build_seedr_metadata_tree(
                     renamed = await rename_seedr_folder(child_id, inferred_name)
                 except Exception:
                     renamed = False
+                _seedr_torrent_names[child_id] = inferred_name
+                effective_child_name = inferred_name
                 if renamed:
-                    _seedr_torrent_names[child_id] = inferred_name
-                    effective_child_name = inferred_name
+                    logger.info(
+                        "Renamed legacy hash-named Seedr folder %s to %s",
+                        child_id,
+                        inferred_name,
+                    )
 
         child_summary = direct_folder_summary(
             child_id,
