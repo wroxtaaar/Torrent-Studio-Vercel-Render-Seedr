@@ -1116,6 +1116,45 @@ async def seedr_add(body: MagnetRequest):
         raise HTTPException(502, "Seedr did not return a task id")
     return {"backend": "seedr", "task_id": int(tid) if tid.isdigit() else tid, "id": int(tid) if tid.isdigit() else tid, "task": task}
 
+@app.get("/api/seedr/tasks/{tid}/progress")
+async def seedr_task_progress(tid: str):
+    """Fast polling endpoint: only fetch task state/progress from Seedr."""
+    try:
+        raw = seedr_data(await seedr_request(f"/tasks/{quote(tid)}"))
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return {
+                "taskId": tid,
+                "status": "not_found",
+                "progress": 0,
+                "name": "",
+                "folderId": "",
+            }
+        raise
+
+    task = (
+        raw.get("task")
+        if isinstance(raw, dict) and isinstance(raw.get("task"), dict)
+        else (raw if isinstance(raw, dict) else {})
+    )
+    progress = float(task.get("progress") or 0)
+    complete = task_complete(task)
+    if complete:
+        progress = 100
+
+    state = str(task.get("state") or task.get("status") or "").lower()
+    status = "completed" if complete else (
+        "waiting" if state in {"queued", "pending", "waiting", "paused", "stopped"} else "downloading"
+    )
+
+    return {
+        "taskId": tid,
+        "status": status,
+        "progress": progress,
+        "name": str(task.get("title") or task.get("name") or ""),
+        "folderId": str(task.get("folder_created_id") or "").strip(),
+    }
+
 @app.get("/api/seedr/tasks/{tid}")
 async def seedr_task(tid: str):
     try:
