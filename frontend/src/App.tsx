@@ -172,6 +172,14 @@ export default function App() {
     progress?: number;
   }>>([]);
   const [seedrFolderContentsLoading, setSeedrFolderContentsLoading] = useState(false);
+  const [seedrPrefetchLoading, setSeedrPrefetchLoading] = useState(false);
+  const [seedrFolderContentsCache, setSeedrFolderContentsCache] = useState<Record<string, Array<{
+    id: string;
+    name: string;
+    size: number;
+    folderId: string;
+    folderPath: string;
+  }>>>({});
   const [seedrConfigured, setSeedrConfigured] = useState(false);
   const [seedrQuota, setSeedrQuota] = useState<{ maxSpace: number; usedSpace: number; remainingSpace: number } | null>(null);
   const [seedrLoading, setSeedrLoading] = useState(false);
@@ -188,6 +196,45 @@ export default function App() {
       return null;
     }
   });
+
+  const toSeedrStorageFile = useCallback((file: {
+    id: string;
+    name: string;
+    size: number;
+    folderId: string;
+    folderPath: string;
+  }): StorageFile => {
+    const lower = file.name.toLowerCase();
+    const type: StorageFile['type'] =
+      /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts)$/i.test(lower) ? 'video' :
+      /\.(mp3|wav|flac|aac|ogg|m4a)$/i.test(lower) ? 'audio' :
+      /\.(zip|rar|7z|tar|gz|bz2)$/i.test(lower) ? 'archive' :
+      /\.(pdf|txt|doc|docx|xls|xlsx|ppt|pptx|csv)$/i.test(lower) ? 'document' :
+      'other';
+
+    return {
+      id: file.id,
+      name: file.name,
+      path: (file.folderPath || '/Torrent Studio').replace(/\/$/, '') + '/' + file.name,
+      folder: file.folderPath || '/Torrent Studio',
+      size: Number(file.size) || 0,
+      type,
+      mimeType: type === 'video' ? 'video/mp4' : type === 'audio' ? 'audio/mpeg' : 'application/octet-stream',
+      createdAt: Date.now(),
+      ownerId: 'seedr',
+      ownerName: 'Seedr',
+      isStreamable: type === 'video' || type === 'audio',
+      downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
+      streamUrl: type === 'video' || type === 'audio'
+        ? '/api/seedr/files/stream?name=' + encodeURIComponent(file.name) + '&type=' + encodeURIComponent(type)
+        : '',
+    };
+  }, []);
+
+  const seedrAllPrefetchedFiles = useMemo(
+    () => Object.values(seedrFolderContentsCache).flat(),
+    [seedrFolderContentsCache]
+  );
 
   // Active Seedr transfers are shown only in the transfer card above.
   // The initial response contains folder metadata only; file rows are loaded
@@ -292,7 +339,9 @@ export default function App() {
 
   // The Files tab is reserved for completed/stored files and folders.
   // Active qBittorrent downloads belong only in the Transfers tab.
-  const visibleFiles = files;
+  const visibleFiles = currentFolder === '/' && seedrAllPrefetchedFiles.length > 0
+    ? seedrAllPrefetchedFiles.map(toSeedrStorageFile)
+    : files;
   // Modals & Drawers
   const [isAddMagnetOpen, setIsAddMagnetOpen] = useState(false);
   const [initialMagnet, setInitialMagnet] = useState('');
@@ -440,11 +489,12 @@ export default function App() {
     setSeedrLoading(true);
     setSeedrError(null);
     try {
-      // First call: folder names/counts/sizes only.
+      // First call: root + folder metadata, including exact file counts/sizes.
       const [result, quota] = await Promise.all([
         api.getSeedrLibrary(),
         api.getSeedrQuota().catch(() => null)
       ]);
+
       setSeedrConfigured(result.configured);
       setSeedrLibraryRoot(result.root);
       setSeedrLibraryFolders(result.folders);
@@ -453,62 +503,90 @@ export default function App() {
         usedSpace: quota.usedSpace,
         remainingSpace: quota.remainingSpace
       } : null);
+      setSeedrLoading(false);
 
-      // Second call: only fetch file rows for the folder currently open.
-      if (selectedSeedrFolderId) {
-        const folder = result.folders.find(item => item.folderId === selectedSeedrFolderId || item.id === selectedSeedrFolderId);
-        if (folder) {
-          setSeedrFolderContentsLoading(true);
-          try {
-            const contents = await api.getSeedrFolderContents(folder.folderId || folder.id);
-            setSeedrFiles(contents.files.map(file => ({
-              id: file.id,
-              name: file.name,
-              size: file.size,
-              folderId: file.folderId || folder.folderId || folder.id,
-              folderPath: folder.path,
-            })));
-          } finally {
-            setSeedrFolderContentsLoading(false);
-          }
-        } else {
-          setSeedrFiles([]);
-        }
+      // Immediately start the second-stage requests in parallel as soon as
+      // metadata arrives. The user does not have to click a folder first.
+      if (result.folders.length > 0) {
+        setSeedrPrefetchLoading(true);
+        void Promise.all(
+          result.folders.map(async folder => {
+            try {
+              const contents = await api.getSeedrFolderContents(folder.folderId || folder.id);
+              const mapped = contents.files.map(file => ({
+                id: file.id,
+                name: file.name,
+                size: Number(file.size) || 0,
+                folderId: file.folderId || folder.folderId || folder.id,
+                folderPath: folder.path,
+              }));
+              setSeedrFolderContentsCache(prev => ({
+                ...prev,
+                [folder.folderId || folder.id]: mapped,
+              }));
+            } catch (error) {
+              console.warn('Failed to prefetch Seedr folder:', folder.name, error);
+            }
+          })
+        ).finally(() => {
+          setSeedrPrefetchLoading(false);
+        });
       } else {
+        setSeedrFolderContentsCache({});
+        setSeedrPrefetchLoading(false);
+      }
+
+      // Keep the currently-open folder populated immediately when it is already
+      // available in the prefetch cache, otherwise handleOpenSeedrFolder will
+      // fetch it on demand.
+      if (!selectedSeedrFolderId) {
         setSeedrFiles([]);
       }
     } catch (error: any) {
       setSeedrError(error?.message || 'Failed to load Seedr library metadata');
       setSeedrFolderContentsLoading(false);
-    } finally {
       setSeedrLoading(false);
+      setSeedrPrefetchLoading(false);
     }
   }, [selectedSeedrFolderId]);
 
   const handleOpenSeedrFolder = useCallback(async (folderId: string) => {
     if (!folderId || folderId === '__root__' || folderId === '__active_seedr__') return;
     const folder = seedrFolderGroups.find(item => item.folderId === folderId);
+    const cached = seedrFolderContentsCache[folderId];
+
     setSelectedSeedrFolderId(folderId);
+    setSeedrError(null);
+
+    // Prefetch normally makes this path instant. Fall back to a request only
+    // when the user clicks before that background request has completed.
+    if (cached) {
+      setSeedrFiles(cached);
+      setSeedrFolderContentsLoading(false);
+      return;
+    }
+
     setSeedrFiles([]);
     setSeedrFolderContentsLoading(true);
-    setSeedrError(null);
 
     try {
       const result = await api.getSeedrFolderContents(folderId);
       const folderPath = folder?.path || '/Torrent Studio';
-      setSeedrFiles(result.files.map(file => ({
+      const mapped = result.files.map(file => ({
         id: file.id,
         name: file.name,
         size: Number(file.size) || 0,
         folderId: file.folderId || folderId,
         folderPath,
-      })));
+      }));
+      setSeedrFolderContentsCache(prev => ({ ...prev, [folderId]: mapped }));
+      setSeedrFiles(mapped);
     } catch (error: any) {
       setSeedrError(error?.message || 'Failed to load Seedr folder contents');
     } finally {
       setSeedrFolderContentsLoading(false);
     }
-  }, [seedrFolderGroups]);
+  }, [seedrFolderGroups, seedrFolderContentsCache]);
 
   useEffect(() => {
     if (activeTab === 'files') loadSeedrLibrary();
@@ -1992,7 +2070,13 @@ export default function App() {
                   </div>
                 )}
 
-                {visibleFolders.length === 0 && visibleFiles.length === 0 && (
+                {seedrPrefetchLoading && currentFolder === '/' && seedrAllPrefetchedFiles.length === 0 ? (
+                  <div className="py-10 text-center rounded-2xl bg-slate-900 border border-slate-800 p-8">
+                    <RefreshCw className="w-8 h-8 text-emerald-400 mx-auto mb-3 animate-spin" />
+                    <h3 className="text-sm font-bold text-slate-300">Loading Seedr files…</h3>
+                    <p className="text-xs text-slate-500 mt-1">Folder metadata is ready. Loading file details in the background.</p>
+                  </div>
+                ) : visibleFolders.length === 0 && visibleFiles.length === 0 && (
                   <div className="py-16 text-center rounded-2xl bg-slate-900 border border-slate-800 p-8">
                     <Folder className="w-12 h-12 text-slate-700 mx-auto mb-3" />
                     <h3 className="text-sm font-bold text-slate-300">No files found in this folder</h3>
