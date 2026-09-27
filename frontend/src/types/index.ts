@@ -58,6 +58,7 @@ export interface StorageFile {
   ownerName: string;
   downloadUrl: string;
   streamUrl: string;
+  externalStreamUrl?: string;
   duration?: number;
 }
 
