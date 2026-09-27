@@ -286,7 +286,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
           return;
         }
 
-         setInspectionSource(isSearchGrab ? '✓ Torrent metadata loaded • Multi-file torrent stays paused while you choose files' : '✓ Torrent metadata loaded • Seedr is not started yet');
+         setInspectionSource(isSearchGrab ? '✓ Torrent metadata loaded • Multi-file torrent is not started while you choose files' : '✓ Torrent metadata loaded • Seedr is not started yet');
         return;
       }
 
@@ -294,12 +294,12 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       if (!hash) {
         throw new Error(
           data?.message ||
-          'qBittorrent did not return a torrent hash. Please verify the magnet URI and try again.'
+          'Torrent metadata did not return a hash. Please verify the magnet URI and try again.'
         );
       }
 
       if (!data?.pending && data?.source !== 'qbt_torrent_pending') {
-        throw new Error(data?.message || 'qBittorrent did not return the torrent file list.');
+        throw new Error(data?.message || 'Torrent metadata did not return the file list.');
       }
 
       const maxAttempts = 120;
@@ -349,7 +349,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
 
         const seconds = attempt * 2;
         setInspectionSource(
-          `Resolving torrent metadata... (${seconds}s) • Torrent is safely paused`
+          `Resolving torrent metadata... (${seconds}s) • Seedr has not been started`
         );
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
@@ -361,7 +361,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       console.warn('Inspect magnet error:', err);
       setInspectedFiles([]);
       setInspectionSource('');
-      setError(err?.message || 'Could not load torrent metadata from qBittorrent.');
+      setError(err?.message || 'Could not load torrent metadata.');
     } finally {
       setIsInspecting(false);
     }
@@ -724,7 +724,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             <div>
               <h3 className="text-base font-bold text-slate-100">Add Magnet / .Torrent & Select Files</h3>
               <p className="text-xs text-slate-400">
-                qBittorrent WebAPI • Real File Metadata & Selective Downloading
+                Torrent Metadata • Select Files
               </p>
             </div>
           </div>
