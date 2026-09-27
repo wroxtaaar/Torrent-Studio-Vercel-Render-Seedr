@@ -186,6 +186,13 @@ def normalize_file(item: Any, folder_id: str = "") -> dict[str, Any]:
         return {"id": "", "name": "Unnamed file", "size": 0, "folderId": folder_id}
     return {
         "id": str(item.get("id") or item.get("file_id") or ""),
+        "streamId": str(
+            item.get("folder_file_id")
+            or item.get("folderFileId")
+            or item.get("file_id")
+            or item.get("id")
+            or ""
+        ),
         "name": str(item.get("name") or item.get("title") or "Unnamed file"),
         "size": int(float(item.get("size") or 0)),
         "folderId": str(item.get("folder_id") or item.get("folderId") or folder_id),
@@ -1176,6 +1183,7 @@ async def seedr_file_stream(
         await _fetch_seedr_hls_manifest(file_id)
         return {
             "url": "/api/seedr/hls/" + quote(file_id, safe=""),
+            "externalUrl": _seedr_media_url(file_id, "video"),
             "name": name or file_id,
             "protocol": "hls",
         }
@@ -1183,6 +1191,7 @@ async def seedr_file_stream(
     # Keep audio on Seedr's native MP3 media endpoint.
     return {
         "url": "/api/seedr/media/audio/" + quote(file_id, safe=""),
+        "externalUrl": _seedr_media_url(file_id, "audio"),
         "name": name or file_id,
         "protocol": "mp3",
     }
