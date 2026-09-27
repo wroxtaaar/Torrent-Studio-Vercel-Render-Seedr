@@ -397,7 +397,7 @@ export const api = {
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch {}
     if (!res.ok) {
-      const error = new Error(data?.error || data?.message || body || `Seedr selected-file add failed (HTTP ${res.status})`);
+      const error = new Error(data?.error || data?.message || data?.detail || body || `Seedr selected-file add failed (HTTP ${res.status})`);
       if (res.status === 413) (error as any).code = 'SEEDR_INSUFFICIENT_SPACE';
       throw error;
     }
@@ -408,7 +408,7 @@ export const api = {
     urls: string,
     category = 'Downloads',
     selectedFiles?: number[],
-    manifest?: { name: string; size: number; priority: number }[],
+    manifest?: { index?: number; name: string; size: number; priority: number }[],
     existingHash?: string,
     forceBackend?: 'seedr' | 'qbittorrent',
     selectedNames?: string[],
@@ -426,7 +426,7 @@ export const api = {
     // a full torrent, defeating the purpose of selective transfer.
     if (forceBackend === 'seedr' && selectedFiles && selectedFiles.length > 0 && manifest && manifest.length > 0) {
       const files = manifest.map((file, index) => ({
-        index,
+        index: Number.isInteger(Number(file.index)) ? Number(file.index) : index,
         name: file.name,
         size: Number(file.size || 0)
       }));
@@ -463,7 +463,7 @@ export const api = {
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch {}
     if (!res.ok) {
-      const error = new Error(data?.error || data?.message || body || `Seedr add failed (HTTP ${res.status})`);
+      const error = new Error(data?.error || data?.message || data?.detail || body || `Seedr add failed (HTTP ${res.status})`);
       if (res.status === 413) (error as any).code = 'SEEDR_INSUFFICIENT_SPACE';
       throw error;
     }
@@ -583,7 +583,7 @@ export const api = {
   },
 
   async getSeedrFileDownload(fileId: string): Promise<{ url: string; name: string }> {
-    const res = await apiFetch('/api/seedr/files/' + encodeURIComponent(fileId) + '/download');
+    const res = await apiFetch('/api/seedr/files/' + encodeURIComponent(fileId) + '/download/url');
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
@@ -619,7 +619,7 @@ export const api = {
   },
 
   async getSeedrFolderDownload(folderId: string): Promise<{ url: string }> {
-    const res = await apiFetch('/api/seedr/folders/' + encodeURIComponent(folderId) + '/download');
+    const res = await apiFetch('/api/seedr/folders/' + encodeURIComponent(folderId) + '/download/url');
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
