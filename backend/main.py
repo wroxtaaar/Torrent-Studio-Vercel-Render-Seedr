@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlsplit
 
 import httpx
+import libtorrent as lt
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -2471,9 +2472,76 @@ async def seedr_folder_delete(folder_id: str):
 async def empty_torrents(filter: str | None = None):
     return []
 
+def _libtorrent_metadata_sync(magnet: str) -> tuple[str, str, list[dict[str, Any]], int]:
+    """Resolve only torrent metadata using libtorrent; never request content pieces."""
+    tmp = tempfile.mkdtemp(prefix="torrent-metadata-lt-")
+    ses = None
+    handle = None
+    try:
+        ses = lt.session()
+        atp = lt.parse_magnet_uri(magnet)
+        atp.save_path = tmp
+
+        # upload_mode prevents piece requests. Disable auto-management so the
+        # session cannot later take the torrent out of upload mode automatically.
+        atp.flags = atp.flags | lt.torrent_flags.upload_mode
+        atp.flags = atp.flags & ~lt.torrent_flags.auto_managed
+
+        handle = ses.add_torrent(atp)
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if handle.has_metadata():
+                break
+            time.sleep(0.15)
+
+        if not handle.has_metadata():
+            status = handle.status()
+            raise TimeoutError(
+                f"libtorrent metadata timeout (state={status.state}, "
+                f"peers={status.num_peers}, seeds={status.num_seeds})"
+            )
+
+        ti = handle.torrent_file()
+        if ti is None:
+            raise RuntimeError("libtorrent reported metadata but torrent_file() is empty")
+
+        fs = ti.layout()
+        torrent_name = str(ti.name() or "")
+        files: list[dict[str, Any]] = []
+        for index in range(fs.num_files()):
+            path = str(fs.file_path(index))
+            size = int(fs.file_size(index))
+            if not path:
+                continue
+            files.append({
+                "index": index,
+                "name": path,
+                "size": size,
+                "path": path,
+                "type": "file",
+                "priority": 1,
+            })
+
+        total_size = sum(int(item.get("size") or 0) for item in files)
+        return torrent_name, magnet, files, total_size
+    finally:
+        try:
+            if ses is not None and handle is not None and handle.is_valid():
+                ses.remove_torrent(handle)
+        except Exception:
+            pass
+        try:
+            if ses is not None:
+                del ses
+        except Exception:
+            pass
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 @app.post("/api/v2/torrents/inspect-magnet")
 async def seedr_inspect_magnet(body: dict[str, Any]):
-    """Resolve magnet metadata without adding or downloading anything in Seedr."""
+    """Resolve magnet metadata with libtorrent without starting Seedr."""
     raw_magnet = str(body.get("magnet") or body.get("source") or "").strip()
     if not raw_magnet:
         raise HTTPException(400, "A magnet link is required")
@@ -2483,108 +2551,33 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
     if not h:
         raise HTTPException(400, "A valid BTIH magnet link is required")
 
-    aria2_path = shutil.which("aria2c")
-    if not aria2_path:
-        raise HTTPException(503, "Torrent metadata resolver is not installed")
-
-    with tempfile.TemporaryDirectory(prefix="torrent-metadata-") as tmp:
-        cmd = [
-            aria2_path,
-            "--bt-metadata-only=true",
-            "--follow-torrent=false",
-            "--bt-enable-lpd=false",
-            "--seed-time=0",
-            "--file-allocation=none",
-            "--allow-overwrite=true",
-            "--auto-file-renaming=false",
-            "--summary-interval=0",
-            "--console-log-level=warn",
-            "--dir", tmp,
-            "--bt-tracker-connect-timeout=5",
-            "--bt-tracker-interval=30",
-            "--connect-timeout=5",
-            "--timeout=20",
+    try:
+        torrent_name, _, files, total_size = await asyncio.to_thread(
+            _libtorrent_metadata_sync,
             magnet,
-        ]
+        )
+    except TimeoutError as exc:
+        logger.warning("libtorrent metadata timeout for %s: %s", h, exc)
+        raise HTTPException(504, str(exc)) from exc
+    except Exception as exc:
+        logger.warning("libtorrent metadata failed for %s: %s", h, exc)
+        raise HTTPException(502, f"libtorrent metadata lookup failed: {exc}") from exc
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
-        except asyncio.TimeoutError:
-            try:
-                process.kill()
-                await process.wait()
-            except Exception:
-                pass
-            raise HTTPException(504, "Torrent metadata resolution timed out")
+    torrent_name = (
+        torrent_name
+        or str(body.get("torrent_name") or "").strip()
+        or f"Torrent {h[:8]}"
+    )
 
-        torrent_files = list(Path(tmp).glob("*.torrent"))
-        if not torrent_files:
-            detail = stderr.decode("utf-8", errors="replace").strip()
-            raise HTTPException(
-                502,
-                detail[:500] or "Could not resolve torrent metadata from peers."
-            )
-
-        try:
-            meta = decode_torrent_metadata(torrent_files[0].read_bytes())
-        except Exception as exc:
-            raise HTTPException(502, f"Could not parse torrent metadata: {exc}") from exc
-
-    info = meta.get(b"info")
-    if not isinstance(info, dict):
-        raise HTTPException(502, "Torrent metadata has no info dictionary")
-
-    def btext(value: Any) -> str:
-        return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
-
-    torrent_name = btext(info.get(b"name")) or str(body.get("torrent_name") or "").strip() or "Torrent"
-    files: list[dict[str, Any]] = []
-
-    multi = info.get(b"files")
-    if isinstance(multi, list):
-        root_name = torrent_name
-        for index, item in enumerate(multi):
-            if not isinstance(item, dict):
-                continue
-            parts = item.get(b"path") or []
-            if isinstance(parts, list):
-                relative = "/".join(btext(part) for part in parts)
-            else:
-                relative = btext(parts)
-            display_path = f"{root_name}/{relative}" if root_name and relative else relative
-            files.append({
-                "index": index,
-                "name": display_path or root_name,
-                "size": int(item.get(b"length") or 0),
-                "path": display_path or root_name,
-                "type": "file",
-                "priority": 1,
-            })
-    else:
-        files.append({
-            "index": 0,
-            "name": torrent_name,
-            "size": int(info.get(b"length") or 0),
-            "path": torrent_name,
-            "type": "file",
-            "priority": 1,
-        })
-
-    total_size = sum(int(item.get("size") or 0) for item in files)
     return {
         "name": torrent_name,
         "hash": h,
         "files": files,
         "totalSize": total_size,
-        "source": "aria2_metadata",
+        "source": "libtorrent_metadata",
         "pending": False,
         "createdPreview": False,
-        "message": "Torrent metadata loaded without starting Seedr.",
+        "message": "Torrent metadata loaded with libtorrent without starting Seedr.",
     }
 
 
