@@ -13,8 +13,7 @@ import httpx
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.background import BackgroundTask
-from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
@@ -1833,8 +1832,9 @@ async def seedr_file_download_direct(
         f"seedr-file-{file_id}",
     )
     body, content_type, headers = await _stream_seedr_download(result["url"])
+    ascii_name = filename_value.encode("ascii", errors="ignore").decode("ascii").strip() or f"seedr-file-{file_id}"
     headers["Content-Disposition"] = (
-        "attachment; filename=" + json.dumps(filename_value, ensure_ascii=False)
+        'attachment; filename="' + ascii_name.replace('"', "_") + '"'
         + "; filename*=UTF-8''" + quote(filename_value, safe="")
     )
     return StreamingResponse(
@@ -1899,8 +1899,9 @@ async def seedr_folder_download_direct(
         filename_value += ".zip"
 
     body, content_type, headers = await _stream_seedr_download(url)
+    ascii_name = filename_value.encode("ascii", errors="ignore").decode("ascii").strip() or f"seedr-folder-{folder_id}.zip"
     headers["Content-Disposition"] = (
-        "attachment; filename=" + json.dumps(filename_value, ensure_ascii=False)
+        'attachment; filename="' + ascii_name.replace('"', "_") + '"'
         + "; filename*=UTF-8''" + quote(filename_value, safe="")
     )
     return StreamingResponse(
