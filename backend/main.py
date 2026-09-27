@@ -13,7 +13,8 @@ import httpx
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.background import BackgroundTask
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
@@ -538,6 +539,51 @@ async def collect_folder(folder_id: str, path: str = "/", depth: int = 0) -> lis
                 files.extend(child)
 
     return files
+
+def _safe_download_filename(filename: str, fallback: str) -> str:
+    value = str(filename or "").strip().replace("\r", "").replace("\n", "")
+    value = re.sub(r'[\\/:*?"<>|]+', "_", value)
+    value = re.sub(r"\s+", " ", value).strip(" .")
+    return value[:240] or fallback
+
+
+async def _stream_seedr_download(url: str):
+    client = httpx.AsyncClient(timeout=None, follow_redirects=True)
+    request = client.build_request("GET", url, headers={"Accept": "*/*"})
+    response = await client.send(request, stream=True)
+
+    if response.status_code >= 400:
+        try:
+            detail = (await response.aread()).decode("utf-8", errors="replace")[:500]
+        finally:
+            await response.aclose()
+            await client.aclose()
+        raise HTTPException(response.status_code, detail or "Seedr download request failed")
+
+    content_type = response.headers.get("content-type") or "application/octet-stream"
+    content_length = response.headers.get("content-length")
+    content_range = response.headers.get("content-range")
+
+    async def body():
+        try:
+            async for chunk in response.aiter_bytes(1024 * 1024):
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    headers = {
+        "Content-Disposition": "",
+        "Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
+        "Cache-Control": "no-store",
+    }
+    if content_length:
+        headers["Content-Length"] = content_length
+    if content_range:
+        headers["Content-Range"] = content_range
+
+    return body, content_type, headers
+
 
 async def download_url(file_id: str) -> dict[str, str]:
     payload = seedr_data(await seedr_request(f"/download/file/{quote(file_id)}/url"))
@@ -1776,10 +1822,26 @@ async def seedr_file_download(file_id: str):
 
 
 @app.get("/api/seedr/files/{file_id}/download/direct")
-async def seedr_file_download_direct(file_id: str):
-    """Redirect the browser directly to Seedr's short-lived download URL."""
+async def seedr_file_download_direct(
+    file_id: str,
+    filename: str = Query(""),
+):
+    """Stream a Seedr file with an explicit browser download filename."""
     result = await download_url(file_id)
-    return RedirectResponse(url=result["url"], status_code=307)
+    filename_value = _safe_download_filename(
+        filename or result.get("name") or "",
+        f"seedr-file-{file_id}",
+    )
+    body, content_type, headers = await _stream_seedr_download(result["url"])
+    headers["Content-Disposition"] = (
+        "attachment; filename=" + json.dumps(filename_value, ensure_ascii=False)
+        + "; filename*=UTF-8''" + quote(filename_value, safe="")
+    )
+    return StreamingResponse(
+        body(),
+        media_type=content_type,
+        headers=headers,
+    )
 
 
 async def seedr_folder_download_url(folder_id: str) -> str:
@@ -1823,9 +1885,29 @@ async def seedr_folder_download(folder_id: str):
 
 
 @app.get("/api/seedr/folders/{folder_id}/download/direct")
-async def seedr_folder_download_direct(folder_id: str):
+async def seedr_folder_download_direct(
+    folder_id: str,
+    filename: str = Query(""),
+):
+    """Stream a Seedr folder archive with an explicit .zip filename."""
     url = await seedr_folder_download_url(folder_id)
-    return RedirectResponse(url=url, status_code=307)
+    filename_value = _safe_download_filename(
+        filename,
+        f"seedr-folder-{folder_id}.zip",
+    )
+    if not filename_value.lower().endswith(".zip"):
+        filename_value += ".zip"
+
+    body, content_type, headers = await _stream_seedr_download(url)
+    headers["Content-Disposition"] = (
+        "attachment; filename=" + json.dumps(filename_value, ensure_ascii=False)
+        + "; filename*=UTF-8''" + quote(filename_value, safe="")
+    )
+    return StreamingResponse(
+        body(),
+        media_type=content_type or "application/zip",
+        headers=headers,
+    )
 
 # HLS stream sources are kept server-side. The browser receives a same-origin
 # manifest URL so the Seedr access token never needs to be exposed to the client.
