@@ -1146,7 +1146,7 @@ async def seedr_hls_manifest(file_id: str):
 
 
 @app.get("/api/seedr/hls/{file_id}/resource")
-async def seedr_hls_resource(file_id: str, u: str = Query(...), request: Request):
+async def seedr_hls_resource(request: Request, file_id: str, u: str = Query(...)):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
 
