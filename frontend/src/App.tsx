@@ -1251,11 +1251,13 @@ export default function App() {
 
   const handleDownloadSeedrFolder = async (folderId: string) => {
     try {
-      const result = await api.getSeedrFolderDownload(folderId);
-      window.open(result.url, '_blank', 'noopener,noreferrer');
+      // Open the navigation synchronously from the click so the browser never
+      // treats it as an async popup. The backend follows through to Seedr's
+      // short-lived download URL.
+      api.openSeedrFolderDownload(folderId);
     } catch (error) {
-      console.error('Failed to create Seedr folder download:', error);
-      setSeedrError(error instanceof Error ? error.message : 'Failed to create Seedr folder download');
+      console.error('Failed to start Seedr folder download:', error);
+      setSeedrError(error instanceof Error ? error.message : 'Failed to start Seedr folder download');
     }
   };
 
@@ -1275,11 +1277,12 @@ export default function App() {
 
   const handleDownloadSeedrFile = async (fileId: string) => {
     try {
-      const result = await api.getSeedrFileDownload(fileId);
-      window.open(result.url, '_blank', 'noopener,noreferrer');
+      // Start the browser navigation synchronously; backend returns a 307 to
+      // Seedr's actual file URL.
+      api.openSeedrFileDownload(fileId);
     } catch (error) {
-      console.error('Failed to create Seedr download link:', error);
-      setSeedrError(error instanceof Error ? error.message : 'Failed to create Seedr download link');
+      console.error('Failed to start Seedr download:', error);
+      setSeedrError(error instanceof Error ? error.message : 'Failed to start Seedr download');
     }
   };
 
