@@ -264,7 +264,21 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
 
       const data = await api.inspectMagnet(source, category, initialSourceUrl, initialDescriptorUrl);
 
-      if (data && Array.isArray(data.files) && data.files.length > 0) {
+      if (data?.pending) {
+      const pendingHash = String(data.hash || '').trim().toLowerCase();
+      if (pendingHash) setInspectedHash(pendingHash);
+      setInspectionSource(data.message || 'Torrent metadata is still resolving in the background...');
+      if (background) {
+        onBackgroundChange?.({
+          active: true,
+          title: 'Resolving torrent metadata',
+          message: data.message || 'Still resolving in the background. Seedr has not been started.'
+        });
+      }
+      return;
+    }
+
+    if (data && Array.isArray(data.files) && data.files.length > 0) {
         const hash = String(data.hash || '').trim().toLowerCase();
         setInspectedHash(hash);
          const resolvedSource =
@@ -413,7 +427,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     setInspectedFiles([]);
     setInspectionSource('');
     setError('');
-    void triggerInspect(source, false);
+    void triggerInspect(source, true);
   }, [isOpen, initialMagnet]);
 
   const handleInputChange = (val: string) => {
