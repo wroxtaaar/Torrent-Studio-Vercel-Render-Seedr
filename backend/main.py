@@ -1049,6 +1049,56 @@ async def download_url(file_id: str) -> dict[str, str]:
         raise HTTPException(502, "Seedr did not return a download URL")
     return {"url": url, "name": name}
 
+def _srt_to_webvtt(text: str) -> str:
+    """Convert a UTF-8/legacy SRT subtitle into browser-compatible WebVTT."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    lines = normalized.split("\n")
+    output = ["WEBVTT", ""]
+    for line in lines:
+        if "-->" in line:
+            line = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", line)
+        output.append(line)
+    result = "\n".join(output)
+    return result if result.endswith("\n") else result + "\n"
+
+
+async def _seedr_subtitle_text(file_id: str, filename: str) -> tuple[str, str]:
+    result = await download_url(file_id)
+    url = result["url"]
+    lower = (filename or result.get("name") or "").lower()
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        raw = response.content
+
+    if lower.endswith(".vtt"):
+        text = raw.decode("utf-8-sig", errors="replace")
+        if not text.lstrip().startswith("WEBVTT"):
+            text = _srt_to_webvtt(text)
+    elif lower.endswith(".srt"):
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("cp1252", errors="replace")
+        text = _srt_to_webvtt(text)
+    else:
+        raise HTTPException(415, "Only SRT and WebVTT subtitle files are supported")
+    return text, "text/vtt; charset=utf-8"
+
+
+@app.get("/api/seedr/files/{file_id}/subtitle")
+async def seedr_file_subtitle(
+    file_id: str,
+    filename: str = Query(""),
+):
+    """Proxy a Seedr SRT/VTT file as WebVTT for the browser <track> element."""
+    text, content_type = await _seedr_subtitle_text(file_id, filename)
+    return Response(
+        content=text,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
 def _search_tokens(value: str) -> list[str]:
     return [token for token in re.findall(r"[a-z0-9]+", value.lower()) if token]
 
