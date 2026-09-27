@@ -398,14 +398,16 @@ async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> N
     remote_task = asyncio.create_task(
         _fetch_remote_torrent_metadata(magnet, info_hash_value)
     )
+    knaben_task = asyncio.create_task(_lookup_knaben_by_hash(info_hash_value))
     libtorrent_task = asyncio.create_task(resolve_libtorrent())
 
+    tasks = (remote_task, knaben_task, libtorrent_task)
     errors: list[str] = []
     try:
-        # Whichever resolver gets metadata first wins. The remote resolver is
-        # useful on Render because it has its own DHT/peer connectivity; the
-        # local resolver remains as a fallback for magnets it cannot resolve.
-        for task in asyncio.as_completed((remote_task, libtorrent_task)):
+        # Race independent metadata sources. This is important on Render:
+        # DHT may have zero peers while the public metadata service or an
+        # indexer already has the same torrent cached.
+        for task in asyncio.as_completed(tasks):
             try:
                 result = await task
             except TimeoutError as exc:
@@ -430,10 +432,11 @@ async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> N
         job.update({"status": "error", "error": message})
         logger.warning("Metadata job %s failed: %s", job_id, message)
     finally:
-        # A cancelled HTTP request is safe to stop. A libtorrent thread may
-        # still finish in the executor, so do not tear down the shared session.
-        for task in (remote_task, libtorrent_task):
-            if not task.done() and task is remote_task:
+        # The local libtorrent thread may continue after another resolver wins;
+        # keep the shared session alive rather than cancelling it mid-operation.
+        # Cancel only outstanding HTTP/indexer requests.
+        for task in (remote_task, knaben_task):
+            if not task.done():
                 task.cancel()
 
 
@@ -3246,22 +3249,17 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
             if descriptor_result:
                 return descriptor_result
 
-    # For a pasted magnet there is no source URL. Try an exact info-hash
-    # lookup in Knaben before falling back to swarm/DHT metadata discovery.
-    try:
-        hash_result = await _lookup_knaben_by_hash(h)
-    except Exception as exc:
-        logger.info("Knaben hash lookup failed for %s: %s", h, exc)
-        hash_result = None
-    if hash_result:
-        return hash_result
-
-    # A dedicated metadata resolver is much faster than waiting on DHT when
-    # the magnet has no reachable peers. It only retrieves torrent metadata;
-    # it does not start a download or send anything to Seedr.
-    remote_result = await _fetch_remote_torrent_metadata(magnet, h)
-    if remote_result:
-        return remote_result
+    # Search results may have an exact hash cached by Knaben. For a pasted
+    # magnet there is no source URL, so do this lookup in the background rather
+    # than making the user wait on a second network request before the job starts.
+    if descriptor_url or source_url:
+        try:
+            hash_result = await _lookup_knaben_by_hash(h)
+        except Exception as exc:
+            logger.info("Knaben hash lookup failed for %s: %s", h, exc)
+            hash_result = None
+        if hash_result:
+            return hash_result
 
     job_id = h
     existing = _metadata_jobs.get(job_id)
