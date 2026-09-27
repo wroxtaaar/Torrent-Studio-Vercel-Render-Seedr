@@ -226,8 +226,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     }
   };
 
-  // Add the torrent paused first, then poll qBittorrent's real file list.
-  // This avoids relying on fetchMetadata returning a complete descriptor.
+  // Resolve torrent metadata without starting a Seedr transfer.
   const triggerInspect = async (link: string, background = false) => {
     const source = link.trim();
     if (!source) {
@@ -242,13 +241,12 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       setError('');
       setInspectedFiles([]);
 
-      // Always use qBittorrent for metadata inspection. This keeps the
-      // Seedr task from starting before the user has selected files. Seedr
-      // does not reliably support pausing prepared tasks on this account.
+      // Metadata inspection must never add the magnet to Seedr. The backend
+      // resolves only the torrent metadata so the user can choose files first.
       setInspectionSource(
         isSearchGrab
           ? 'Loading torrent metadata...'
-          : 'Adding torrent paused and waiting for qBittorrent metadata...'
+          : 'Resolving torrent metadata without starting Seedr...'
       );
 
       const data = await api.inspectMagnet(source, category);
@@ -288,7 +286,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
           return;
         }
 
-         setInspectionSource(isSearchGrab ? '✓ Torrent metadata loaded • Multi-file torrent stays paused while you choose files' : '✓ qBittorrent metadata loaded • Multi-file torrent stays paused while you choose files');
+         setInspectionSource(isSearchGrab ? '✓ Torrent metadata loaded • Multi-file torrent stays paused while you choose files' : '✓ Torrent metadata loaded • Seedr is not started yet');
         return;
       }
 
@@ -342,7 +340,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
               return;
             }
 
-            setInspectionSource('✓ qBittorrent metadata loaded • Multi-file torrent stays paused while you choose files');
+            setInspectionSource('✓ Torrent metadata loaded • Seedr is not started yet');
             return;
           }
         } catch {
@@ -351,13 +349,13 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
 
         const seconds = attempt * 2;
         setInspectionSource(
-          `qBittorrent is resolving metadata... (${seconds}s) • Torrent is safely paused`
+          `Resolving torrent metadata... (${seconds}s) • Torrent is safely paused`
         );
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
 
       throw new Error(
-        'qBittorrent has not returned the file list yet. The torrent remains paused. Click Load File List to retry.'
+        'Torrent metadata could not be resolved yet. Click Load File List to retry.'
       );
     } catch (err: any) {
       console.warn('Inspect magnet error:', err);
