@@ -1071,7 +1071,7 @@ def seedr_problem(status_code: int, data: Any, raw: str) -> tuple[str, int, str]
 def seedr_error_message(status_code: int, data: Any, raw: str) -> str:
     return seedr_problem(status_code, data, raw)[2]
 
-async def seedr_request(path: str, method: str = "GET", body: Any = None, form: bool = False) -> Any:
+async def seedr_request(path: str, method: str = "GET", body: Any = None, form: bool = False, base_url: str = SEEDR_BASE) -> Any:
     if not SEEDR_TOKEN:
         raise SeedrError(
             "SEEDR_TOKEN_MISSING",
@@ -1080,7 +1080,7 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
         )
 
     request_path = str(path).lstrip("/")
-    url = f"{SEEDR_BASE}/{request_path}"
+    url = f"{str(base_url).rstrip("/")}/{request_path}"
     token = normalize_seedr_token(SEEDR_TOKEN)
 
     kwargs: dict[str, Any] = {}
@@ -1378,40 +1378,22 @@ async def rename_seedr_folder(folder_id: str, name: str) -> bool:
 
 async def add_task(magnet: str, folder_id: int) -> dict[str, Any]:
     normalized = normalize_magnet(magnet)
-    # Seedr's maintained Python wrappers currently use the legacy
-    # resource.php?func=add_torrent contract. The newer /tasks POST is returning
-    # "parsing_error" for this account, so use the known-compatible add_torrent
-    # operation here and normalize its response into our task shape.
+    # Seedr's current /tasks API is served from the V2 hostname. The same
+    # bearer token is accepted there, but the legacy www hostname can return
+    # "parsing_error" for this request.
     result = seedr_data(
-        await legacy_seedr_request(
-            "add_torrent",
+        await seedr_request(
+            "/tasks",
             "POST",
             {
                 "torrent_magnet": normalized,
-                "wishlist_id": "",
-                "folder_id": str(int(folder_id)),
+                "folder_id": int(folder_id),
             },
+            base_url=SEEDR_V2_BASE,
         )
     )
     if not isinstance(result, dict):
         raise HTTPException(502, "Seedr did not return a valid task response")
-
-    if result.get("result") is False:
-        raise SeedrError(
-            "SEEDR_API_ERROR",
-            502,
-            str(result.get("message") or result.get("error") or "Seedr rejected the torrent"),
-        )
-
-    # Keep the rest of Torrent Studio independent of the legacy field names.
-    if result.get("user_torrent_id") is not None:
-        result.setdefault("task_id", result.get("user_torrent_id"))
-        result.setdefault("id", result.get("user_torrent_id"))
-    if result.get("torrent_hash") and not result.get("hash"):
-        result.setdefault("hash", result.get("torrent_hash"))
-    if result.get("title") and not result.get("name"):
-        result.setdefault("name", result.get("title"))
-
     return result
 
 
