@@ -763,18 +763,41 @@ def seedr_data(value: Any) -> Any:
     return value
 
 def seedr_access_token() -> str:
-    """Extract the legacy Seedr access token from a raw or wrapped token."""
+    """Normalize a raw Seedr token or common API-console export formats."""
     raw = str(SEEDR_TOKEN or "").strip()
     if not raw:
         return ""
+
+    # Render users sometimes paste the complete Authorization value.
+    if raw.lower().startswith("bearer "):
+        raw = raw[7:].strip()
+
+    # Also accept a copied JSON token response without logging its contents.
+    try:
+        candidate = json.loads(raw)
+        if isinstance(candidate, dict):
+            raw = str(
+                candidate.get("access_token")
+                or candidate.get("token")
+                or candidate.get("personal_access_token")
+                or ""
+            ).strip()
+            if raw.lower().startswith("bearer "):
+                raw = raw[7:].strip()
+    except Exception:
+        pass
+
+    # Backwards compatibility for the wrapped token format used by the
+    # previous Torrent Studio configuration.
     try:
         decoded = base64.b64decode(raw, validate=True).decode("utf-8")
         payload = json.loads(decoded)
         if isinstance(payload, dict) and payload.get("access_token"):
-            return str(payload["access_token"]).strip()
+            raw = str(payload["access_token"]).strip()
     except Exception:
         pass
-    return raw
+
+    return raw.strip().strip('"').strip("'")
 
 async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
     """List a Seedr folder using the legacy resource endpoint.
