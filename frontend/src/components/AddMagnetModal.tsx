@@ -569,25 +569,23 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     try {
       setIsLoading(true);
       setError('');
-      // Default to qBittorrent whenever Seedr quota cannot be verified.
-      // Never fall through to the ordinary Seedr add path after a quota lookup
-      // failure, because that path starts the full torrent.
+      // Seedr selection is based on the files the user actually selected.
+      // The metadata was resolved before this point, so Seedr has not started
+      // the torrent yet. If the selected bytes fit in the free space, send the
+      // manifest to the Seedr selective-task endpoint. qBittorrent remains the
+      // fallback only when quota cannot be read.
       let selectedBackend: 'seedr' | 'qbittorrent' = 'qbittorrent';
       try {
-        // Seedr transfers the entire torrent; it cannot receive only the
-        // selected files. If the COMPLETE torrent fits, Seedr gets the whole
-        // torrent. Otherwise qBittorrent handles the selected-file priorities.
         const quota = await api.getSeedrQuota();
         if (
           quota.configured &&
-          selectedFileIndexes.length === inspectedFiles.length &&
-          totalTorrentSize > 0 &&
-          totalTorrentSize <= quota.remainingSpace
+          totalSelectedSize > 0 &&
+          totalSelectedSize <= quota.remainingSpace
         ) {
           selectedBackend = 'seedr';
         }
       } catch {
-        // Keep qBittorrent as the safe fallback.
+        // Keep qBittorrent as the safe fallback when Seedr quota is unavailable.
       }
 
       let downloadSource =
@@ -936,7 +934,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                 </span>
               </div>
               <div className="px-3 py-2 bg-slate-900/60 border-t border-slate-800 text-[10px] text-slate-500">
-                Seedr can only receive the complete torrent. If you skip any file, Torrent Studio uses qBittorrent so only the checked files are downloaded.
+                Seedr receives the torrent after you select files. Torrent Studio sends the selected-file bitmap so only checked files are requested.
               </div>
 
               </div>
@@ -952,7 +950,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
           <div className="text-[11px] sm:text-xs text-slate-400 w-full sm:w-auto">
             {isSingleFile && selectedCount > 0 ? (
               <span className="text-amber-300">
-                Seedr transfers the entire torrent. File selection applies to qBittorrent.
+                Seedr selection is based on the checked files.
               </span>
             ) : isSingleFile && inspectedFiles.length > 0 ? (
               <span>Ready to download</span>
@@ -1002,7 +1000,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                 {isLoading
                   ? 'Adding Task...'
                   : isSingleFile && selectedCount > 0
-                  ? 'Download File'
+                  ? 'Download Selected File'
                   : selectedCount > 0
                   ? `Download ${selectedCount} Selected File(s)`
                   : isInspecting
