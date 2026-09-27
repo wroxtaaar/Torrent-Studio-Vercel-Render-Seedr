@@ -3,4 +3,3 @@ uvicorn[standard]>=0.34,<1
 httpx>=0.28,<1
 beautifulsoup4>=4.13,<5
 
-bencodepy>=0.9,<1
