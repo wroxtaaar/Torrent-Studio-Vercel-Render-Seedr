@@ -502,6 +502,25 @@ export const api = {
   },
 
 
+  async getSeedrAuthStatus(): Promise<{
+    configured: boolean;
+    authenticated: boolean;
+    code: string;
+    message?: string;
+  }> {
+    const res = await apiFetch('/api/seedr/auth-status');
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch { data = null; }
+    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to check Seedr authentication');
+    return {
+      configured: Boolean(data?.configured),
+      authenticated: Boolean(data?.authenticated),
+      code: String(data?.code || ''),
+      message: typeof data?.message === 'string' ? data.message : undefined,
+    };
+  },
+
   async getSeedrQuota(): Promise<{
     configured: boolean;
     maxSpace: number;
