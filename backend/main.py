@@ -448,6 +448,39 @@ def seedr_data(value: Any) -> Any:
         return value["data"]
     return value
 
+async def seedr_root_request() -> Any:
+    """Fetch the Seedr account root using Seedr's dedicated root endpoint."""
+    if not SEEDR_TOKEN:
+        raise HTTPException(503, "Seedr is not configured")
+
+    url = "https://www.seedr.cc/api/folder"
+    headers = {"Accept": "application/json"}
+    params = {"access_token": SEEDR_TOKEN}
+
+    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+        response = await client.get(url, headers=headers, params=params)
+
+    raw = response.text
+    try:
+        data = response.json() if raw else None
+    except Exception:
+        data = raw
+
+    if response.status_code >= 400:
+        detail = raw
+        if isinstance(data, dict):
+            detail = (
+                data.get("error_description")
+                or data.get("reason_phrase")
+                or data.get("message")
+                or data.get("error")
+                or raw
+            )
+        raise HTTPException(response.status_code, str(detail or "Seedr root request failed"))
+
+    return data
+
+
 async def seedr_request(path: str, method: str = "GET", body: Any = None, form: bool = False) -> Any:
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
@@ -2096,7 +2129,12 @@ async def seedr_folder_payload(folder_id: str) -> dict[str, Any]:
             return cached[1]
 
         try:
-            payload = seedr_data(await seedr_request(f"/fs/folder/{quote(folder_id)}/contents"))
+            # Seedr exposes the account root through /api/folder; numeric
+            # folder IDs use the /fs/folder/{id}/contents endpoint.
+            if folder_id == "0":
+                payload = seedr_data(await seedr_root_request())
+            else:
+                payload = seedr_data(await seedr_request(f"/fs/folder/{quote(folder_id)}/contents"))
         except HTTPException as exc:
             if exc.status_code == 404:
                 return {}
@@ -2280,9 +2318,9 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
         return await _seedr_metadata_task
 
     async def build() -> dict[str, Any]:
-        # Seedr exposes its account root as folder ID 0. Allow an optional
-        # SEEDR_LIBRARY_FOLDER_ID override, but do not require it for the
-        # normal library view.
+        # Seedr's account root is exposed through a dedicated endpoint.
+        # Keep SEEDR_LIBRARY_FOLDER_ID as an optional override for deployments
+        # that want to start from a specific existing folder.
         root = SEEDR_LIBRARY_FOLDER_ID
         if not root.isdigit():
             root = "0"
