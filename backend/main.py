@@ -842,6 +842,74 @@ def seedr_access_token() -> str:
     return normalize_seedr_token(SEEDR_TOKEN)
 
 
+async def legacy_seedr_request(
+    func: str,
+    method: str = "POST",
+    body: dict[str, Any] | None = None,
+) -> Any:
+    """Call Seedr's documented legacy resource API using form data."""
+    if not SEEDR_TOKEN:
+        raise HTTPException(503, "Seedr is not configured")
+
+    access_token = seedr_access_token()
+    if not access_token:
+        raise HTTPException(503, "Seedr access token is empty")
+
+    url = "https://www.seedr.cc/oauth_test/resource.php"
+    params = {
+        "access_token": access_token,
+        "func": str(func),
+    }
+    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+        response = await client.request(
+            method,
+            url,
+            params=params,
+            data=body or {},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+
+    raw = response.text
+    try:
+        data = response.json() if raw else None
+    except Exception:
+        data = raw
+
+    if response.status_code >= 400:
+        raise SeedrError(
+            *seedr_problem(response.status_code, data, raw)
+        )
+
+    if isinstance(data, dict):
+        raw_error = str(data.get("error") or "").strip().lower()
+        if raw_error not in ("", "0"):
+            if "access_denied" in raw_error or "access denied" in raw_error:
+                raise SeedrError(
+                    "SEEDR_LIBRARY_ACCESS_DENIED",
+                    403,
+                    "Seedr denied this account operation.",
+                )
+            if "unauthor" in raw_error or "invalid token" in raw_error:
+                raise SeedrError(
+                    "SEEDR_TOKEN_REJECTED",
+                    401,
+                    "Seedr rejected the API token.",
+                )
+            # Seedr's legacy API often reports operation failures inside a 200
+            # JSON response. Preserve the provider's error text instead of
+            # treating that as a successful task creation.
+            raise SeedrError(
+                "SEEDR_API_ERROR",
+                502,
+                str(data.get("error_description") or data.get("message") or data.get("error")),
+            )
+
+    return data
+
+
 async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
     """List a Seedr folder using the legacy resource endpoint.
     
@@ -1310,18 +1378,40 @@ async def rename_seedr_folder(folder_id: str, name: str) -> bool:
 
 async def add_task(magnet: str, folder_id: int) -> dict[str, Any]:
     normalized = normalize_magnet(magnet)
+    # Seedr's maintained Python wrappers currently use the legacy
+    # resource.php?func=add_torrent contract. The newer /tasks POST is returning
+    # "parsing_error" for this account, so use the known-compatible add_torrent
+    # operation here and normalize its response into our task shape.
     result = seedr_data(
-        await seedr_request(
-            "/tasks",
+        await legacy_seedr_request(
+            "add_torrent",
             "POST",
             {
                 "torrent_magnet": normalized,
-                "folder_id": int(folder_id),
+                "wishlist_id": "",
+                "folder_id": str(int(folder_id)),
             },
         )
     )
     if not isinstance(result, dict):
         raise HTTPException(502, "Seedr did not return a valid task response")
+
+    if result.get("result") is False:
+        raise SeedrError(
+            "SEEDR_API_ERROR",
+            502,
+            str(result.get("message") or result.get("error") or "Seedr rejected the torrent"),
+        )
+
+    # Keep the rest of Torrent Studio independent of the legacy field names.
+    if result.get("user_torrent_id") is not None:
+        result.setdefault("task_id", result.get("user_torrent_id"))
+        result.setdefault("id", result.get("user_torrent_id"))
+    if result.get("torrent_hash") and not result.get("hash"):
+        result.setdefault("hash", result.get("torrent_hash"))
+    if result.get("title") and not result.get("name"):
+        result.setdefault("name", result.get("title"))
+
     return result
 
 
