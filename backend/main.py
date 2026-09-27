@@ -23,8 +23,7 @@ from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
 logger = logging.getLogger("torrent-studio")
-SEEDR_BASE = os.getenv("SEEDR_API_BASE", "https://api.seedr.cc/api/v0.1/p").rstrip("/")
-SEEDR_API_FALLBACK_BASE = "https://www.seedr.cc/api/v0.1/p"
+SEEDR_BASE = "https://www.seedr.cc/api/v0.1/p"
 SEEDR_MEDIA_BASE = "https://www.seedr.cc/api"
 SEEDR_V2_BASE = "https://v2.seedr.cc/api/v0.1/p"
 SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
@@ -764,41 +763,19 @@ def seedr_data(value: Any) -> Any:
     return value
 
 def seedr_access_token() -> str:
-    """Normalize a raw Seedr token or common API-console export formats."""
+    """Extract an OAuth access token only for the legacy resource.php API."""
     raw = str(SEEDR_TOKEN or "").strip()
     if not raw:
         return ""
-
-    # Render users sometimes paste the complete Authorization value.
-    if raw.lower().startswith("bearer "):
-        raw = raw[7:].strip()
-
-    # Also accept a copied JSON token response without logging its contents.
-    try:
-        candidate = json.loads(raw)
-        if isinstance(candidate, dict):
-            raw = str(
-                candidate.get("access_token")
-                or candidate.get("token")
-                or candidate.get("personal_access_token")
-                or ""
-            ).strip()
-            if raw.lower().startswith("bearer "):
-                raw = raw[7:].strip()
-    except Exception:
-        pass
-
-    # Backwards compatibility for the wrapped token format used by the
-    # previous Torrent Studio configuration.
     try:
         decoded = base64.b64decode(raw, validate=True).decode("utf-8")
         payload = json.loads(decoded)
         if isinstance(payload, dict) and payload.get("access_token"):
-            raw = str(payload["access_token"]).strip()
+            return str(payload["access_token"]).strip()
     except Exception:
         pass
+    return raw
 
-    return raw.strip().strip('"').strip("'")
 
 async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
     """List a Seedr folder using the legacy resource endpoint.
@@ -969,10 +946,15 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
             "Seedr API token is not configured. Set SEEDR_API_TOKEN in Render.",
         )
 
-    normalized_path = "/" + str(path).lstrip("/")
-    token = seedr_access_token()
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    request_path = str(path).lstrip("/")
+    url = f"{SEEDR_BASE}/{request_path}"
+
     kwargs: dict[str, Any] = {}
+    headers = {
+        "Authorization": f"Bearer {SEEDR_TOKEN.strip()}",
+        "Accept": "application/json",
+    }
+
     if body is not None:
         if form:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -981,48 +963,30 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
             headers["Content-Type"] = "application/json"
             kwargs["json"] = body
 
-    bases = [SEEDR_BASE.rstrip("/")]
-    fallback = SEEDR_API_FALLBACK_BASE.rstrip("/")
-    if fallback not in bases:
-        bases.append(fallback)
-
-    last_status = 0
-    last_data: Any = None
-    last_raw = ""
     async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
-        for base in bases:
-            url = base + normalized_path
-            response = await client.request(method, url, headers=headers, **kwargs)
-            raw = response.text
-            try:
-                data = response.json() if raw else None
-            except Exception:
-                data = raw
+        response = await client.request(method, url, headers=headers, **kwargs)
 
-            if response.status_code < 400:
-                if isinstance(data, dict):
-                    soft = str(data.get("reason_phrase") or "").strip().lower()
-                    if soft == "not_enough_space":
-                        raise SeedrError(
-                            "SEEDR_QUOTA_UNAVAILABLE",
-                            413,
-                            "Seedr reports insufficient storage space for this operation.",
-                        )
-                return data
+    raw = response.text
+    try:
+        data = response.json() if raw else None
+    except Exception:
+        data = raw
 
-            last_status, last_data, last_raw = response.status_code, data, raw
+    if response.status_code >= 400:
+        code, status_code, detail = seedr_problem(response.status_code, data, raw)
+        raise SeedrError(code, status_code, detail)
 
-            # A hostname-level 401 is ambiguous because Seedr currently exposes
-            # API examples under both api.seedr.cc and www.seedr.cc. Try the
-            # second documented host before telling the user that their token
-            # itself is invalid.
-            if response.status_code == 401 and base != bases[-1]:
-                logger.warning("Seedr API host rejected authentication; trying fallback host")
-                continue
-            break
+    if isinstance(data, dict):
+        soft = str(data.get("reason_phrase") or "").strip().lower()
+        if soft == "not_enough_space":
+            raise SeedrError(
+                "SEEDR_QUOTA_UNAVAILABLE",
+                413,
+                "Seedr reports insufficient storage space for this operation.",
+            )
 
-    code, status_code, detail = seedr_problem(last_status, last_data, last_raw)
-    raise SeedrError(code, status_code, detail)
+    return data
+
 
 def arr(value: Any, keys: tuple[str, ...]) -> list[Any]:
     if isinstance(value, list):
@@ -1256,33 +1220,20 @@ async def rename_seedr_folder(folder_id: str, name: str) -> bool:
 
 async def add_task(magnet: str, folder_id: int) -> dict[str, Any]:
     normalized = normalize_magnet(magnet)
-    # Seedr's current task endpoint expects a JSON body. The older
-    # application used form encoding here, which causes Seedr to return
-    # {"reason_phrase":"parsing_error"}.
-    try:
-        result = seedr_data(
-            await seedr_request(
-                "/tasks",
-                "POST",
-                {"torrent_magnet": normalized, "folder_id": folder_id},
-            )
+    result = seedr_data(
+        await seedr_request(
+            "/tasks",
+            "POST",
+            {
+                "torrent_magnet": normalized,
+                "folder_id": int(folder_id),
+            },
         )
-        if isinstance(result, dict):
-            return result
-    except HTTPException as exc:
-        h = info_hash(normalized)
-        if exc.status_code == 400 and h:
-            result = seedr_data(
-                await seedr_request(
-                    "/tasks",
-                    "POST",
-                    {"torrent_magnet": f"magnet:?xt=urn:btih:{h}", "folder_id": folder_id},
-                )
-            )
-            if isinstance(result, dict):
-                return result
-        raise
-    raise HTTPException(502, "Seedr did not return a valid task response")
+    )
+    if not isinstance(result, dict):
+        raise HTTPException(502, "Seedr did not return a valid task response")
+    return result
+
 
 def normalize_file(item: Any, folder_id: str = "") -> dict[str, Any]:
     if not isinstance(item, dict):
@@ -2507,38 +2458,15 @@ async def seedr_auth_status():
             "message": "Seedr API token is not configured in Render.",
         }
 
-    # /user is a profile endpoint and can legitimately be unavailable when a
-    # token does not include the profile scope. It must not be used as the
-    # definitive test that an otherwise valid file-management token is bad.
     try:
-        tasks_payload = await seedr_request("/tasks")
-        tasks = arr(seedr_data(tasks_payload), ("tasks", "torrents", "items"))
-        profile_id = None
-        profile_plan = None
-        try:
-            profile_payload = seedr_data(await seedr_request("/user"))
-            if isinstance(profile_payload, dict):
-                profile_id = profile_payload.get("id")
-                profile_plan = profile_payload.get("plan")
-        except SeedrError as profile_exc:
-            if profile_exc.code == "SEEDR_TOKEN_REJECTED":
-                # The task endpoint already proved the token. Treat a profile
-                # scope denial as non-fatal authentication.
-                logger.info("Seedr /user profile lookup unavailable; task API authentication succeeded")
-            else:
-                logger.info("Seedr /user profile lookup failed: %s", profile_exc.code)
-
+        # The old working integration treats a successful /user call as the
+        # authentication test. Do the same here; /user is explicitly documented
+        # by Seedr for Bearer-authenticated requests.
+        await seedr_request("/user")
         return {
             "configured": True,
             "authenticated": True,
             "code": "SEEDR_AUTH_OK",
-            "taskAccess": True,
-            "taskCount": len(tasks),
-            "user": {
-                "id": profile_id,
-                "email": None,
-                "plan": profile_plan,
-            },
         }
     except SeedrError as exc:
         return {
@@ -2548,77 +2476,52 @@ async def seedr_auth_status():
             "message": exc.detail,
         }
 
+
+
 @app.get("/api/seedr/quota")
 async def seedr_quota():
     if not SEEDR_TOKEN:
         return {"configured": False, "maxSpace": 0, "usedSpace": 0, "remainingSpace": 0}
 
-    def extract_space_stats(payload: Any) -> tuple[int, int]:
-        data = seedr_data(payload)
-        if not isinstance(data, dict):
-            return 0, 0
-
-        account = data.get("account") if isinstance(data.get("account"), dict) else {}
-        storage = data.get("storage") if isinstance(data.get("storage"), dict) else {}
-
+    try:
+        result = seedr_data(await seedr_request("/user"))
+        storage = result.get("account", {}).get("storage", {}) if isinstance(result, dict) else {}
+        if not isinstance(storage, dict):
+            storage = result.get("storage", {}) if isinstance(result, dict) else {}
         max_space = int(float(
-            data.get("space_max")
-            or account.get("space_max")
-            or storage.get("limit")
+            storage.get("limit")
             or storage.get("max_space")
-            or data.get("maxSpace")
-            or 0
+            or storage.get("maxSpace")
+            or result.get("max_space", 0) if isinstance(result, dict) else 0
         ))
         used = int(float(
-            data.get("space_used")
-            or account.get("space_used")
-            or storage.get("used")
+            storage.get("used")
             or storage.get("used_space")
-            or data.get("usedSpace")
-            or 0
+            or storage.get("usedSpace")
+            or result.get("used_space", 0) if isinstance(result, dict) else 0
         ))
-        return max(0, max_space), max(0, used)
-
-    # The documented /user endpoint is the primary source. It is the source
-    # used by the working Seedr integration for free-tier accounts; /me/quota
-    # is retained only as a compatibility fallback for accounts that expose it.
-    max_space = 0
-    used = 0
-    try:
-        max_space, used = extract_space_stats(await seedr_request("/user"))
-    except SeedrError as exc:
-        # A rejected token or explicit library denial is actionable and should
-        # not be mislabeled as a generic quota outage.
-        if exc.code in {"SEEDR_TOKEN_REJECTED", "SEEDR_LIBRARY_ACCESS_DENIED"}:
-            raise
-        logger.info("Seedr /user quota lookup failed (%s); trying /me/quota", exc.status_code)
-        try:
-            max_space, used = extract_space_stats(await seedr_request("/me/quota"))
-        except SeedrError as fallback_exc:
-            logger.warning(
-                "Seedr quota lookup failed: /user=%s /me/quota=%s",
-                exc.status_code,
-                fallback_exc.status_code,
-            )
-            raise SeedrError(
-                "SEEDR_QUOTA_UNAVAILABLE",
-                503,
-                "Seedr quota information is currently unavailable. The token is present, but account storage information could not be read.",
-            ) from fallback_exc
-
-    if max_space <= 0 or used < 0 or used > max_space:
+    except SeedrError:
+        raise
+    except Exception as exc:
+        logger.warning("Seedr quota parsing failed: %s", exc)
         raise SeedrError(
             "SEEDR_QUOTA_UNAVAILABLE",
             503,
-            "Seedr returned no usable storage quota. Account storage information is currently unavailable.",
+            "Seedr account storage information is temporarily unavailable.",
+        ) from exc
+
+    if not (max_space > 0) or used < 0 or used > max_space:
+        raise SeedrError(
+            "SEEDR_QUOTA_UNAVAILABLE",
+            503,
+            "Seedr account storage information is temporarily unavailable.",
         )
 
-    remaining = max(0, max_space - used)
     return {
         "configured": True,
         "maxSpace": max_space,
         "usedSpace": used,
-        "remainingSpace": remaining,
+        "remainingSpace": max(0, max_space - used),
     }
 
 @app.get("/api/seedr/tasks")
