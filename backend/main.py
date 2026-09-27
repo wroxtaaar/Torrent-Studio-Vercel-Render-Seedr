@@ -1324,14 +1324,59 @@ async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, g
 async def seedr_quota():
     if not SEEDR_TOKEN:
         return {"configured": False, "maxSpace": 0, "usedSpace": 0, "remainingSpace": 0}
-    result = seedr_data(await seedr_request("/me/quota"))
-    if not isinstance(result, dict):
-        raise HTTPException(502, "Seedr returned an invalid quota response")
-    storage = result.get("storage") if isinstance(result.get("storage"), dict) else {}
-    max_space = int(float(result.get("space_max") or storage.get("limit") or result.get("maxSpace") or 0))
-    used = int(float(result.get("space_used") or storage.get("used") or result.get("usedSpace") or 0))
-    remaining = int(float(result.get("space_remaining") or storage.get("remaining") or result.get("remainingSpace") or max(0, max_space-used)))
-    return {"configured": True, "maxSpace": max_space, "usedSpace": used, "remainingSpace": remaining}
+
+    def extract_space_stats(payload: Any) -> tuple[int, int]:
+        data = seedr_data(payload)
+        if not isinstance(data, dict):
+            return 0, 0
+
+        account = data.get("account") if isinstance(data.get("account"), dict) else {}
+        storage = data.get("storage") if isinstance(data.get("storage"), dict) else {}
+
+        max_space = int(float(
+            data.get("space_max")
+            or account.get("space_max")
+            or storage.get("limit")
+            or data.get("maxSpace")
+            or 0
+        ))
+        used = int(float(
+            data.get("space_used")
+            or account.get("space_used")
+            or storage.get("used")
+            or data.get("usedSpace")
+            or 0
+        ))
+        return max(0, max_space), max(0, used)
+
+    # The Seedr folder-contents response includes the account's space_max and
+    # space_used fields alongside the filesystem data. Prefer it because it is
+    # the same data source used to build the Library and correctly reflects
+    # storage occupied by completed files/folders.
+    root_id = str(SEEDR_LIBRARY_FOLDER_ID or "").strip()
+    max_space = 0
+    used = 0
+
+    if root_id.isdigit():
+        try:
+            max_space, used = extract_space_stats(
+                await seedr_request(f"/fs/folder/{quote(root_id)}/contents")
+            )
+        except HTTPException:
+            pass
+
+    # Fall back to the account quota endpoint if the filesystem response does
+    # not carry the space fields on a particular Seedr API response.
+    if max_space <= 0:
+        max_space, used = extract_space_stats(await seedr_request("/me/quota"))
+
+    remaining = max(0, max_space - used)
+    return {
+        "configured": True,
+        "maxSpace": max_space,
+        "usedSpace": used,
+        "remainingSpace": remaining,
+    }
 
 @app.get("/api/seedr/tasks")
 async def seedr_tasks():
