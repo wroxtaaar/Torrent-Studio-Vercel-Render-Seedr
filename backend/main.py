@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,71 @@ class MagnetRequest(BaseModel):
     folder_id: str | int | None = None
     torrent_name: str | None = None
 
+
+
+def decode_torrent_metadata(raw: bytes) -> dict[bytes, Any]:
+    """Decode the small bencoded .torrent metadata file produced by aria2."""
+    position = 0
+
+    def parse() -> Any:
+        nonlocal position
+        if position >= len(raw):
+            raise ValueError("unexpected end of bencode")
+
+        marker = raw[position:position + 1]
+        if marker == b"i":
+            position += 1
+            end = raw.find(b"e", position)
+            if end < 0:
+                raise ValueError("unterminated integer")
+            value = int(raw[position:end])
+            position = end + 1
+            return value
+
+        if marker == b"l":
+            position += 1
+            value = []
+            while position < len(raw) and raw[position:position + 1] != b"e":
+                value.append(parse())
+            if position >= len(raw):
+                raise ValueError("unterminated list")
+            position += 1
+            return value
+
+        if marker == b"d":
+            position += 1
+            value: dict[bytes, Any] = {}
+            while position < len(raw) and raw[position:position + 1] != b"e":
+                key = parse()
+                if not isinstance(key, bytes):
+                    raise ValueError("dictionary key is not bytes")
+                value[key] = parse()
+            if position >= len(raw):
+                raise ValueError("unterminated dictionary")
+            position += 1
+            return value
+
+        if marker.isdigit():
+            colon = raw.find(b":", position)
+            if colon < 0:
+                raise ValueError("invalid byte string")
+            size = int(raw[position:colon])
+            position = colon + 1
+            end = position + size
+            if end > len(raw):
+                raise ValueError("byte string exceeds metadata")
+            value = raw[position:end]
+            position = end
+            return value
+
+        raise ValueError("invalid bencode token")
+
+    value = parse()
+    if position != len(raw):
+        raise ValueError("trailing bencode data")
+    if not isinstance(value, dict):
+        raise ValueError("torrent metadata root is not a dictionary")
+    return value
 
 def seedr_data(value: Any) -> Any:
     if isinstance(value, dict) and "data" in value:
@@ -2355,10 +2421,7 @@ async def empty_torrents(filter: str | None = None):
 
 @app.post("/api/v2/torrents/inspect-magnet")
 async def seedr_inspect_magnet(body: dict[str, Any]):
-    """Compatibility endpoint for the existing Add Magnet UI, backed by Seedr."""
-    if not SEEDR_TOKEN:
-        raise HTTPException(503, "Seedr is not configured")
-
+    """Resolve magnet metadata without adding or downloading anything in Seedr."""
     raw_magnet = str(body.get("magnet") or body.get("source") or "").strip()
     if not raw_magnet:
         raise HTTPException(400, "A magnet link is required")
@@ -2368,71 +2431,108 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
     if not h:
         raise HTTPException(400, "A valid BTIH magnet link is required")
 
-    folder = str(SEEDR_LIBRARY_FOLDER_ID).strip()
-    if not folder.isdigit():
-        raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
+    aria2_path = shutil.which("aria2c")
+    if not aria2_path:
+        raise HTTPException(503, "Torrent metadata resolver is not installed")
 
-    existing = await find_task_by_hash(h)
-    created = False
-    task = existing
-    if not task:
-        task = await add_task(magnet, int(folder))
-        created = True
+    with tempfile.TemporaryDirectory(prefix="torrent-metadata-") as tmp:
+        cmd = [
+            aria2_path,
+            "--bt-metadata-only=true",
+            "--follow-torrent=false",
+            "--bt-enable-lpd=false",
+            "--seed-time=0",
+            "--file-allocation=none",
+            "--allow-overwrite=true",
+            "--auto-file-renaming=false",
+            "--summary-interval=0",
+            "--console-log-level=warn",
+            "--dir", tmp,
+            "--bt-tracker-connect-timeout=5",
+            "--bt-tracker-interval=30",
+            "--connect-timeout=5",
+            "--timeout=20",
+            magnet,
+        ]
 
-    task = unwrap_seedr_task(task)
-    tid = task_id(task)
-    if not tid:
-        raise HTTPException(502, "Seedr did not return a task id")
-
-    files: list[dict[str, Any]] = []
-    for _ in range(15):
         try:
-            files = await task_contents(tid)
-        except HTTPException:
-            files = []
-        if files:
-            break
-        await asyncio.sleep(0.5)
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+            raise HTTPException(504, "Torrent metadata resolution timed out")
 
-    normalized_files = []
-    for index, item in enumerate(files):
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or item.get("path") or "").strip()
-        size = int(float(item.get("size") or 0))
-        if not name:
-            continue
-        normalized_files.append({
-            "index": int(item.get("index") or index),
-            "name": name,
-            "size": size,
-            "path": str(item.get("path") or name),
-            "type": str(item.get("type") or "file"),
-            "priority": int(item.get("priority") or 0),
+        torrent_files = list(Path(tmp).glob("*.torrent"))
+        if not torrent_files:
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            raise HTTPException(
+                502,
+                detail[:500] or "Could not resolve torrent metadata from peers."
+            )
+
+        try:
+            meta = decode_torrent_metadata(torrent_files[0].read_bytes())
+        except Exception as exc:
+            raise HTTPException(502, f"Could not parse torrent metadata: {exc}") from exc
+
+    info = meta.get(b"info")
+    if not isinstance(info, dict):
+        raise HTTPException(502, "Torrent metadata has no info dictionary")
+
+    def btext(value: Any) -> str:
+        return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+
+    torrent_name = btext(info.get(b"name")) or str(body.get("torrent_name") or "").strip() or "Torrent"
+    files: list[dict[str, Any]] = []
+
+    multi = info.get(b"files")
+    if isinstance(multi, list):
+        root_name = torrent_name
+        for index, item in enumerate(multi):
+            if not isinstance(item, dict):
+                continue
+            parts = item.get(b"path") or []
+            if isinstance(parts, list):
+                relative = "/".join(btext(part) for part in parts)
+            else:
+                relative = btext(parts)
+            display_path = f"{root_name}/{relative}" if root_name and relative else relative
+            files.append({
+                "index": index,
+                "name": display_path or root_name,
+                "size": int(item.get(b"length") or 0),
+                "path": display_path or root_name,
+                "type": "file",
+                "priority": 1,
+            })
+    else:
+        files.append({
+            "index": 0,
+            "name": torrent_name,
+            "size": int(info.get(b"length") or 0),
+            "path": torrent_name,
+            "type": "file",
+            "priority": 1,
         })
 
-    total_size = sum(int(item.get("size") or 0) for item in normalized_files)
-    torrent_name = (
-        str(body.get("torrent_name") or "").strip()
-        or seedr_task_name(task)
-        or f"Torrent {tid}"
-    )
-
-    if created:
-        schedule_seedr_cleanup(tid, torrent_name, seedr_task_folder_id(task))
-
+    total_size = sum(int(item.get("size") or 0) for item in files)
     return {
         "name": torrent_name,
         "hash": h,
-        "files": normalized_files,
+        "files": files,
         "totalSize": total_size,
-        "source": "seedr_metadata",
-        "taskId": int(tid) if str(tid).isdigit() else tid,
-        "pending": not bool(normalized_files),
-        "createdPreview": created,
-        "message": "Seedr metadata loaded. The task is not paused; file-selection write support is still being tested."
-        if normalized_files else
-        "Seedr task was created, but its file list is not available yet.",
+        "source": "aria2_metadata",
+        "pending": False,
+        "createdPreview": False,
+        "message": "Torrent metadata loaded without starting Seedr.",
     }
 
 
