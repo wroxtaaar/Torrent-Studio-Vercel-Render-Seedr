@@ -457,14 +457,20 @@ export default function App() {
       ? seedrAllPrefetchedFiles.map(toSeedrStorageFile)
       : files;
 
-    // Keep root/"outside folder" files deterministic and easy to scan. Folder
-    // contents keep their Seedr order; only the root file list is sorted.
-    if (currentFolder !== '/' || seedrAllPrefetchedFiles.length === 0) return source;
+    const search = fileSearch.trim().toLowerCase();
+    const filtered = source.filter(file => {
+      const matchesType = fileTypeFilter === 'all' || file.type === fileTypeFilter;
+      const matchesSearch = !search || file.name.toLowerCase().includes(search);
+      return matchesType && matchesSearch;
+    });
 
-    return [...source].sort((a, b) =>
+    // Keep root/"outside folder" files deterministic and easy to scan.
+    if (currentFolder !== '/' || seedrAllPrefetchedFiles.length === 0) return filtered;
+
+    return [...filtered].sort((a, b) =>
       a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
     );
-  }, [currentFolder, seedrAllPrefetchedFiles, files, toSeedrStorageFile]);
+  }, [currentFolder, seedrAllPrefetchedFiles, files, toSeedrStorageFile, fileTypeFilter, fileSearch]);
   // Modals & Drawers
   const [isAddMagnetOpen, setIsAddMagnetOpen] = useState(false);
   const [initialMagnet, setInitialMagnet] = useState('');
@@ -2349,23 +2355,6 @@ export default function App() {
                     Root
                   </button>
 
-                  {folders
-                    .filter(f => f.path !== '/')
-                    .map(folder => (
-                      <React.Fragment key={folder.id}>
-                        <ChevronRight className="w-3.5 h-3.5 text-slate-600 shrink-0" />
-                        <button
-                          onClick={() => setCurrentFolder(folder.path)}
-                          className={`px-2.5 py-1.5 rounded-lg whitespace-nowrap transition ${
-                            currentFolder === folder.path
-                              ? 'bg-cyan-500/20 text-cyan-400'
-                              : 'text-slate-400 hover:text-slate-200'
-                          }`}
-                        >
-                          {folder.name}
-                        </button>
-                      </React.Fragment>
-                    ))}
                 </div>
 
 
@@ -2626,31 +2615,12 @@ export default function App() {
         {activeTab === 'storage' && storageStats && cleanupSettings && (
           <div className="space-y-4">
             <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
-                  <HardDrive className="w-5 h-5 text-cyan-400" />
-                  <span>Uncapped Server Disk Storage & Auto-Cleanup</span>
-                </h2>
-                <p className="text-xs text-slate-400 mt-1 max-w-xl">
-                  Unlike conventional cloud seedboxes with 5GB caps, SeedFlow utilizes your full host storage allocation with automated orphan & temp fragment garbage collection.
-                </p>
-              </div>
-
-              <button
-                onClick={() => setIsCleanupOpen(true)}
-                className="px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center gap-2 shadow-lg shadow-cyan-500/20 transition self-start md:self-auto"
-              >
-                <Sparkles className="w-4 h-4" />
-                <span>Configure Auto-Cleanup</span>
-              </button>
-            </div>
-
-            {/* Storage Cards Grid */}
+              {/* Storage Cards Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
                 <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Used Storage</p>
                 <p className="text-xl font-bold font-mono text-cyan-400 mt-1">{formatBytes(storageStats.usedBytes)}</p>
-                <p className="text-[11px] text-slate-500 mt-1">{storageStats.usedPercentage}% of total server capacity</p>
+                <p className="text-[11px] text-slate-500 mt-1">{Number(storageStats.usedPercentage || 0).toFixed(2)}% of total server capacity</p>
               </div>
 
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
@@ -2662,10 +2632,7 @@ export default function App() {
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
                 <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Total Server Disk</p>
                 <p className="text-xl font-bold font-mono text-slate-100 mt-1">{formatBytes(storageStats.totalBytes)}</p>
-                <p className="text-[11px] text-cyan-400 mt-1 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Unlimited Server Storage (No 5GB cap)</span>
-                </p>
+                
               </div>
             </div>
           </div>
