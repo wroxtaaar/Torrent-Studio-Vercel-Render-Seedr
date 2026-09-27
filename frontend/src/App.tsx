@@ -197,6 +197,30 @@ export default function App() {
       return null;
     }
   });
+  const seedrTorrentNamesKey = 'seedflow_seedr_torrent_names';
+  const [seedrTorrentNames, setSeedrTorrentNames] = useState<Record<string, string>>(() => {
+    try {
+      const raw = window.localStorage.getItem(seedrTorrentNamesKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const rememberSeedrTorrentName = useCallback((folderId: string, torrentName: string) => {
+    const id = String(folderId || '').trim();
+    const name = String(torrentName || '').trim();
+    if (!id || !name || name === 'Waiting for Seedr metadata…') return;
+
+    setSeedrTorrentNames(prev => {
+      const next = { ...prev, [id]: name };
+      try {
+        window.localStorage.setItem(seedrTorrentNamesKey, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   const toSeedrStorageFile = useCallback((file: {
     id: string;
@@ -253,16 +277,20 @@ export default function App() {
       progress?: number;
     };
 
-    const groups: SeedrFolderGroup[] = seedrLibraryFolders.map(folder => ({
-      folderId: folder.folderId || folder.id,
-      name: folder.name,
+    const groups: SeedrFolderGroup[] = seedrLibraryFolders.map(folder => {
+      const folderId = folder.folderId || folder.id;
+      const torrentName = seedrTorrentNames[folderId];
+      return {
+      folderId,
+      name: torrentName || folder.name,
       path: folder.path,
       files: [],
       totalSize: Number(folder.totalSize) || 0,
       filesCount: Number(folder.filesCount) || 0,
       active: false,
       progress: undefined,
-    }));
+      };
+    });
 
     if (seedrNotice?.taskId != null && seedrNotice.status !== 'completed') {
       const normalizeSeedrText = (value: string) =>
@@ -320,7 +348,7 @@ export default function App() {
       if (!a.active && b.active) return 1;
       return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
     });
-  }, [seedrLibraryFolders, seedrNotice]);
+  }, [seedrLibraryFolders, seedrNotice, seedrTorrentNames]);
 
   useEffect(() => {
     if (
@@ -500,10 +528,15 @@ export default function App() {
         void api.getSeedrTaskProgress(activeTaskId).then(progressResult => {
           if (progressResult.status === 'not_found') return;
           const progress = Math.max(0, Math.min(100, Number(progressResult.progress) || 0));
+          const progressName = String(progressResult.name || '').trim();
+          const progressFolderId = String(progressResult.folderId || '').trim();
+          if (progressFolderId && progressName && progressName !== 'Waiting for Seedr metadata…') {
+            rememberSeedrTorrentName(progressFolderId, progressName);
+          }
           setSeedrNotice(prev => prev ? {
             ...prev,
-            name: String(progressResult.name || prev.name),
-            folderId: String(progressResult.folderId || prev.folderId || '').trim(),
+            name: progressName || prev.name,
+            folderId: progressFolderId || prev.folderId || '',
             status: progressResult.status,
             progress,
           } : null);
@@ -579,7 +612,7 @@ export default function App() {
       setSeedrLoading(false);
       setSeedrPrefetchLoading(false);
     }
-  }, []);
+  }, [rememberSeedrTorrentName]);
 
   // Keep an opened folder synchronized with the background prefetch cache.
   // Changing the selected folder no longer reruns the entire library request.
@@ -800,6 +833,12 @@ export default function App() {
         torrentName
       );
       if (result.backend === 'seedr') {
+        const initialTorrentName = String(torrentName || '').trim();
+        const returnedFolderId = String((result as any).seedrFolderId || '').trim();
+        if (returnedFolderId && initialTorrentName) {
+          rememberSeedrTorrentName(returnedFolderId, initialTorrentName);
+        }
+
         setSeedrNotice({
           taskId: result.seedrTaskId ?? null,
           name: (() => {
@@ -980,6 +1019,22 @@ export default function App() {
 
         setSeedrNotice(prev => {
           if (!prev) return null;
+
+          const resolvedFolderId = String(
+            progressResult.folderId ||
+            prev.folderId ||
+            ''
+          ).trim();
+          const resolvedTorrentName = String(
+            progressResult.name ||
+            prev.name ||
+            ''
+          ).trim();
+
+          if (resolvedFolderId && resolvedTorrentName && resolvedTorrentName !== 'Waiting for Seedr metadata…') {
+            rememberSeedrTorrentName(resolvedFolderId, resolvedTorrentName);
+          }
+
           return {
             ...prev,
             name: String((result as any).name || prev.name),
@@ -1005,7 +1060,7 @@ export default function App() {
       active = false;
       if (timeoutId !== null) window.clearTimeout(timeoutId);
     };
-  }, [seedrNotice?.taskId, seedrNotice?.status, loadSeedrLibrary]);
+  }, [seedrNotice?.taskId, seedrNotice?.status, loadSeedrLibrary, rememberSeedrTorrentName]);
 
   const handleCancelSeedrDownload = async () => {
     const taskId = seedrNotice?.taskId;
