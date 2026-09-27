@@ -2562,7 +2562,10 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => {
-                          setIsAddMagnetOpen(true);
+                          const source = backgroundMetadataJob.hash
+                            ? 'magnet:?xt=urn:btih:' + backgroundMetadataJob.hash
+                            : '';
+                          openAddMagnet(source);
                           setActiveTab('files');
                         }}
                         className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold"
