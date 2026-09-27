@@ -490,67 +490,72 @@ export default function App() {
   const loadSeedrLibrary = useCallback(async () => {
     setSeedrLoading(true);
     setSeedrError(null);
+
     try {
-      // First call: root + folder metadata, including exact file counts/sizes.
-      const [result, quota] = await Promise.all([
-        api.getSeedrLibrary(),
-        api.getSeedrQuota().catch(() => null)
-      ]);
+      // Stage 1 — only the metadata required to paint the outer Seedr
+      // Library immediately. Do not wait for quota or file rows.
+      const result = await api.getSeedrLibrary();
 
       setSeedrConfigured(result.configured);
       setSeedrLibraryRoot(result.root);
       setSeedrLibraryFolders(result.folders);
-      setSeedrFolderContentsCache({});
-      setSeedrFiles([]);
-      setSeedrQuota(quota && quota.configured ? {
-        maxSpace: quota.maxSpace,
-        usedSpace: quota.usedSpace,
-        remainingSpace: quota.remainingSpace
-      } : null);
       setSeedrLoading(false);
 
-      // Immediately start the second-stage requests in parallel as soon as
-      // metadata arrives. The user does not have to click a folder first.
-      if (result.folders.length > 0) {
-        setSeedrPrefetchLoading(true);
-        void Promise.all(
-          result.folders.map(async folder => {
-            try {
-              const contents = await api.getSeedrFolderContents(folder.folderId || folder.id);
-              const mapped = contents.files.map(file => ({
-                id: file.id,
-                streamId: file.streamId,
-                name: file.name,
-                size: Number(file.size) || 0,
-                folderId: file.folderId || folder.folderId || folder.id,
-                folderPath: folder.path,
-              }));
-              const folderKey = folder.folderId || folder.id;
-              setSeedrFolderContentsCache(prev => ({
-                ...prev,
-                [folderKey]: mapped,
-              }));
-            } catch (error) {
-              console.warn('Failed to prefetch Seedr folder:', folder.name, error);
-            }
-          })
-        ).finally(() => {
-          setSeedrPrefetchLoading(false);
-        });
-      } else {
-        setSeedrFolderContentsCache({});
-        setSeedrPrefetchLoading(false);
-      }
+      // Stage 2 — start all internal/detail requests automatically, in the
+      // background, immediately after stage 1 completes.
+      setSeedrPrefetchLoading(result.folders.length > 0);
 
-      // Keep the currently-open folder populated immediately when it is already
-      // available in the prefetch cache, otherwise handleOpenSeedrFolder will
-      // fetch it on demand.
-      if (!selectedSeedrFolderId) {
-        setSeedrFiles([]);
-      }
+      const validFolderKeys = new Set(
+        result.folders.map(folder => String(folder.folderId || folder.id))
+      );
+      setSeedrFolderContentsCache(prev =>
+        Object.fromEntries(
+          Object.entries(prev).filter(([key]) => validFolderKeys.has(key))
+        )
+      );
+
+      void Promise.all([
+        api.getSeedrQuota().then(quota => {
+          if (!quota?.configured) return;
+          setSeedrQuota({
+            maxSpace: quota.maxSpace,
+            usedSpace: quota.usedSpace,
+            remainingSpace: quota.remainingSpace
+          });
+        }).catch(error => {
+          console.warn('Failed to refresh Seedr quota:', error);
+        }),
+
+        ...result.folders.map(async folder => {
+          const folderKey = String(folder.folderId || folder.id);
+          try {
+            const contents = await api.getSeedrFolderContents(folderKey);
+            const mapped = contents.files.map(file => ({
+              id: file.id,
+              streamId: file.streamId,
+              name: file.name,
+              size: Number(file.size) || 0,
+              folderId: file.folderId || folderKey,
+              folderPath: folder.path,
+            }));
+
+            setSeedrFolderContentsCache(prev => ({
+              ...prev,
+              [folderKey]: mapped,
+            }));
+          } catch (error) {
+            console.warn('Failed to prefetch Seedr folder:', folder.name, error);
+          }
+        })
+      ]).finally(() => {
+        setSeedrPrefetchLoading(false);
+      });
+
+      // Do not clear the existing file rows during refresh. React keeps the
+      // current visible component intact while fresh internal details arrive.
+      // The cache effect below swaps them in as soon as they are available.
     } catch (error: any) {
-      setSeedrError(error?.message || 'Failed to load Seedr library metadata');
-      setSeedrFolderContentsLoading(false);
+      setSeedrError(error?.message || 'Failed to refresh Seedr metadata');
       setSeedrLoading(false);
       setSeedrPrefetchLoading(false);
     }
@@ -560,6 +565,7 @@ export default function App() {
   // Changing the selected folder no longer reruns the entire library request.
   useEffect(() => {
     if (!selectedSeedrFolderId) return;
+
     const cached = seedrFolderContentsCache[selectedSeedrFolderId];
     if (!cached) return;
 
