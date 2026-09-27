@@ -59,10 +59,18 @@ export const api = {
   },
 
   async addSearchTorrent(source: string, size: number, infoHash?: string): Promise<any> {
+    const magnet = source.trim();
+    const resolvedMagnet =
+      magnet.toLowerCase().startsWith('magnet:?')
+        ? magnet
+        : infoHash
+          ? 'magnet:?xt=urn:btih:' + infoHash.trim()
+          : magnet;
+
     const res = await apiFetch('/api/search/torrents/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source, size, infoHash })
+      body: JSON.stringify({ source: resolvedMagnet, size, infoHash })
     });
     const body = await res.text();
     let data: any = null;
