@@ -292,6 +292,119 @@ async def download_url(file_id: str) -> dict[str, str]:
         raise HTTPException(502, "Seedr did not return a download URL")
     return {"url": url, "name": name}
 
+def _search_tokens(value: str) -> list[str]:
+    return [token for token in re.findall(r"[a-z0-9]+", value.lower()) if token]
+
+
+def _tvmaze_query(value: str) -> str:
+    value = re.sub(r"\bS\d{1,2}(?:E\d{1,3})?.*$", "", value, flags=re.I)
+    value = re.sub(r"\b(?:season|series)\s*\d+\b", "", value, flags=re.I)
+    value = re.sub(r"\b(?:19|20)\d{2}\b", "", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _normalize_title(value: str) -> str:
+    return " ".join(_search_tokens(value))
+
+
+async def search_tv_eztv(query: str, limit: int = 30) -> list[dict[str, Any]]:
+    tv_query = _tvmaze_query(query)
+    if not tv_query:
+        return []
+
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
+            response = await client.get(
+                "https://api.tvmaze.com/search/shows",
+                params={"q": tv_query},
+                headers={"Accept": "application/json"},
+            )
+            response.raise_for_status()
+            matches = response.json()
+    except (httpx.HTTPError, ValueError):
+        return []
+
+    if not isinstance(matches, list):
+        return []
+
+    target = _normalize_title(tv_query)
+    imdb_id = ""
+    for match in matches[:10]:
+        show = match.get("show") if isinstance(match, dict) else None
+        if not isinstance(show, dict):
+            continue
+        name = str(show.get("name") or "").strip()
+        external = show.get("externals")
+        candidate = str(external.get("imdb") or "").strip() if isinstance(external, dict) else ""
+        if candidate and _normalize_title(name) == target:
+            imdb_id = candidate
+            break
+
+    if not imdb_id:
+        return []
+
+    payload: dict[str, Any] | None = None
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        for host in ("eztv.yt", "eztvx.to"):
+            try:
+                response = await client.get(
+                    f"https://{host}/api/get-torrents",
+                    params={"imdb_id": imdb_id, "limit": "100", "page": "1"},
+                    headers={"Accept": "application/json"},
+                )
+                response.raise_for_status()
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    payload = parsed
+                    break
+            except (httpx.HTTPError, ValueError):
+                continue
+
+    if not payload:
+        return []
+
+    results: list[dict[str, Any]] = []
+    for item in payload.get("torrents") or []:
+        if not isinstance(item, dict):
+            continue
+        h = str(item.get("hash") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", h):
+            continue
+        title = str(item.get("filename") or item.get("title") or "").strip()
+        if not title:
+            continue
+        magnet = str(item.get("magnet_url") or "").strip()
+        if not magnet:
+            magnet = f"magnet:?xt=urn:btih:{h}&dn={quote(title, safe='')}"
+        try:
+            from datetime import datetime, timezone
+            published = datetime.fromtimestamp(
+                int(item.get("date_released_unix") or 0), tz=timezone.utc
+            ).isoformat() if item.get("date_released_unix") else ""
+        except Exception:
+            published = ""
+        results.append({
+            "guid": f"eztv-{h}",
+            "title": title,
+            "size": int(float(item.get("size_bytes") or 0)),
+            "seeders": int(item.get("seeds") or 0),
+            "leechers": int(item.get("peers") or 0),
+            "indexer": "eztv.yt",
+            "protocol": "torrent",
+            "publishDate": published,
+            "magnetUrl": magnet,
+            "infoHash": h,
+            "downloadUrl": magnet,
+            "infoUrl": "",
+            "sourceUrl": "",
+        })
+    results.sort(
+        key=lambda row: (row["seeders"] + row["leechers"], row["publishDate"]),
+        reverse=True,
+    )
+    return results[:limit]
+
+
 async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
     """
     Search through the dedicated Torrent Search MCP API.
