@@ -28,9 +28,12 @@ import {
   QbtSettings
 } from '../types/index.ts';
 
+// The frontend and API are served by the same Render service in the
+// all-in-one deployment. Keep an optional VITE_API_URL override for local
+// development or an external API, but default to the current browser origin.
 const API_BASE = (
   String(import.meta.env.VITE_API_URL || '').trim() ||
-  'https://torrent-studio-vercel-render-seedr.onrender.com'
+  window.location.origin
 ).replace(/\/+$/, '');
 const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const value = String(input);
