@@ -1169,6 +1169,7 @@ async def seedr_add(body: MagnetRequest):
         else:
             raise
 
+    task = unwrap_seedr_task(task)
     tid = task_id(task)
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
@@ -1430,19 +1431,14 @@ async def get_seedr_metadata_tree() -> dict[str, Any]:
         folder_name_overrides: dict[str, str] = dict(_seedr_torrent_names)
         try:
             tasks_payload = seedr_data(await seedr_request("/tasks"))
-            for raw_task in arr(tasks_payload, ("tasks", "torrents")):
-                if not isinstance(raw_task, dict):
+            for raw_task in arr(tasks_payload, ("tasks", "torrents", "items")):
+                task = unwrap_seedr_task(seedr_data(raw_task))
+                if not task:
                     continue
-                task_folder_id = str(raw_task.get("folder_created_id") or "").strip()
-                nested_torrent = raw_task.get("torrent") if isinstance(raw_task.get("torrent"), dict) else {}
-                task_name = str(
-                    raw_task.get("torrent_name")
-                    or raw_task.get("title")
-                    or raw_task.get("name")
-                    or nested_torrent.get("name")
-                    or nested_torrent.get("title")
-                    or ""
-                ).strip()
+
+                task_folder_id = seedr_task_folder_id(task)
+                task_name = seedr_task_name(task)
+
                 if task_folder_id and task_name:
                     folder_name_overrides[task_folder_id] = task_name
         except HTTPException:
