@@ -89,15 +89,15 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     // Seedr supplies the exact HLS URL that external players use (e.g. MX
     // Player). Try that URL first in Hls.js; if browser CORS blocks it, fall
     // back automatically to our Render same-origin proxy.
-    // Browser playback stays same-origin so HLS requests can be proxied by the backend.
-    // The backend now sources that stream from Seedr V2 presentations; keep the
-    // direct external URL as a fallback for VLC/MX Player.
-    const preferredSeedrUrl = file.streamUrl || file.externalStreamUrl || directBaseUrl;
+    // Use the Seedr V2 presentation URL first. MediaFusion follows the same
+    // model, and it avoids rewriting a valid Seedr HLS playlist unnecessarily.
+    // Fall back to our same-origin proxy when the direct URL is blocked by CORS.
+    const preferredSeedrUrl = file.externalStreamUrl || file.streamUrl || directBaseUrl;
     const streamUrl = selectedAudioIndex !== undefined
       ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
       : preferredSeedrUrl;
     const fallbackStreamUrl = file.externalStreamUrl && file.streamUrl !== file.externalStreamUrl
-      ? file.externalStreamUrl
+      ? file.streamUrl
       : '';
 
     const restoreTime = resumeTimeRef.current;
@@ -521,7 +521,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               <div className="max-w-md rounded-xl bg-slate-900/95 border border-rose-500/30 p-5">
                 <p className="text-sm font-semibold text-rose-300">{mediaError}</p>
                 <p className="text-xs text-slate-400 mt-2">
-                  The Seedr HLS stream could not be loaded. The server now proxies the playlist and media segments to keep playback same-origin.
+                  The Seedr stream could not be played. We tried the direct Seedr presentation URL and the server proxy.
                 </p>
               </div>
             </div>
