@@ -8,6 +8,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   Cloud,
   Download,
+  Copy,
   Upload,
   HardDrive,
   Folder,
@@ -155,6 +156,7 @@ export default function App() {
   const [seedrLoading, setSeedrLoading] = useState(false);
   const [seedrError, setSeedrError] = useState<string | null>(null);
   const [seedrDeleteNotice, setSeedrDeleteNotice] = useState<string | null>(null);
+  const [copiedSeedrFileId, setCopiedSeedrFileId] = useState<string | null>(null);
   const [seedrAddBlockedNotice, setSeedrAddBlockedNotice] = useState<string | null>(null);
   const [isCancellingSeedr, setIsCancellingSeedr] = useState(false);
   const [activeSeedrFolderOpen, setActiveSeedrFolderOpen] = useState(false);
@@ -210,10 +212,16 @@ export default function App() {
       }
     }
 
-    // Represent the active Seedr download as the same folder that Seedr
-    // created. If that folder already contains completed files, merge the
-    // active state into that existing folder instead of rendering two cards.
+    // Represent an active Seedr task as the same logical folder that will
+    // contain its completed files. Seedr may expose the folder ID late, or
+    // may use slightly different metadata between the task and filesystem
+    // endpoints, so match by ID first and then by normalized folder name,
+    // path suffix, or file-name overlap. This prevents one download from
+    // appearing as both an active card and a completed-library card.
     if (seedrNotice?.taskId != null && seedrNotice.status !== 'completed') {
+      const normalizeSeedrText = (value: string) =>
+        value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
       const actualFolderId =
         seedrNotice.folderId?.trim() ||
         seedrNotice.files.find(file => file.folderId && !file.folderId.startsWith('__'))?.folderId ||
@@ -221,8 +229,16 @@ export default function App() {
 
       const activeName =
         seedrNotice.folderName?.trim() ||
+        seedrNotice.files.find(file => file.folderPath)?.folderPath.split('/').filter(Boolean).pop()?.trim() ||
         seedrNotice.name?.trim() ||
         'Seedr download';
+
+      const activeNameKey = normalizeSeedrText(activeName);
+      const activeFileKeys = new Set(
+        (seedrNotice.files || []).map(file =>
+          normalizeSeedrText((file.folderPath || '') + '/' + file.name)
+        )
+      );
 
       const activeFiles: SeedrDisplayFile[] = (seedrNotice.files || []).map(file => ({
         id: file.id,
@@ -234,24 +250,44 @@ export default function App() {
         downloading: true,
       }));
 
-      const matchingEntry = actualFolderId
-        ? groups.get(actualFolderId)
-        : Array.from(groups.values()).find(group =>
-            group.name.localeCompare(activeName, undefined, { sensitivity: 'base' }) === 0
-          );
+      let matchingEntry = actualFolderId ? groups.get(actualFolderId) : undefined;
+
+      if (!matchingEntry) {
+        matchingEntry = Array.from(groups.values()).find(group =>
+          normalizeSeedrText(group.name) === activeNameKey ||
+          normalizeSeedrText(group.path.split('/').filter(Boolean).pop() || '') === activeNameKey
+        );
+      }
+
+      if (!matchingEntry && activeFileKeys.size > 0) {
+        matchingEntry = Array.from(groups.values()).find(group =>
+          group.files.some(file =>
+            activeFileKeys.has(
+              normalizeSeedrText((file.folderPath || '') + '/' + file.name)
+            )
+          )
+        );
+      }
 
       if (matchingEntry) {
-        const liveIds = new Set(activeFiles.map(file => file.id));
+        const activeKeys = new Set(
+          activeFiles.map(file =>
+            normalizeSeedrText((file.folderPath || matchingEntry!.path) + '/' + file.name)
+          )
+        );
+
         matchingEntry.files = [
-          ...matchingEntry.files.filter(file => !liveIds.has(file.id)),
+          ...matchingEntry.files.filter(file =>
+            !activeKeys.has(
+              normalizeSeedrText((file.folderPath || matchingEntry!.path) + '/' + file.name)
+            )
+          ),
           ...activeFiles
         ];
         matchingEntry.totalSize = matchingEntry.files.reduce((sum, file) => sum + file.size, 0);
         matchingEntry.active = true;
         matchingEntry.progress = Math.max(0, Math.min(100, Number(seedrNotice.progress) || 0));
-        if (actualFolderId) {
-          matchingEntry.folderId = actualFolderId;
-        }
+        matchingEntry.folderId = actualFolderId || matchingEntry.folderId;
         matchingEntry.name = activeName || matchingEntry.name;
       } else {
         const syntheticFolderId = actualFolderId || '__active_seedr__';
@@ -972,6 +1008,20 @@ export default function App() {
     }
   };
 
+  const handleCopySeedrFileUrl = async (fileId: string) => {
+    try {
+      const result = await api.getSeedrFileDownload(fileId);
+      await navigator.clipboard.writeText(result.url);
+      setCopiedSeedrFileId(fileId);
+      window.setTimeout(() => {
+        setCopiedSeedrFileId(current => current === fileId ? null : current);
+      }, 1800);
+    } catch (error) {
+      console.error('Failed to copy Seedr download link:', error);
+      setSeedrError(error instanceof Error ? error.message : 'Failed to copy Seedr download link');
+    }
+  };
+
   const handleDownloadSeedrFile = async (fileId: string) => {
     try {
       const result = await api.getSeedrFileDownload(fileId);
@@ -1572,88 +1622,10 @@ export default function App() {
                   {selectedSeedrFolderId === null ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       {seedrFolderGroups.map(folder => {
-                        const singleFile = folder.files.length === 1;
-                        const file = singleFile ? folder.files[0] : null;
-                        const isMedia = Boolean(file && /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name));
-
-                        // One-file folders are displayed directly as the file.
-                        // Multi-file folders remain collapsible folders.
-                        if (singleFile && file) {
-                          return (
-                            <div
-                              key={folder.folderId}
-                              className="h-full rounded-xl bg-slate-900/80 border border-slate-800 px-3 py-3 hover:border-cyan-500/30 transition"
-                            >
-                              <div className="flex items-center gap-3">
-                                <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 shrink-0">
-                                  <File className="w-5 h-5" />
-                                </div>
-
-                                <div className="min-w-0 flex-1">
-                                  <div className="truncate text-sm font-semibold text-slate-100">{file.name}</div>
-                                  <div className="text-[10px] text-slate-500 mt-0.5">
-                                    {formatBytes(file.size)}
-                                    {folder.active && <span className="text-emerald-300"> • Downloading</span>}
-                                  </div>
-
-                                  {folder.active && (
-                                    <div className="mt-1.5 flex items-center gap-2">
-                                      <div className="h-1.5 flex-1 rounded-full bg-slate-800 overflow-hidden">
-                                        <div
-                                          className="h-full rounded-full bg-emerald-400 transition-all duration-500"
-                                          style={{ width: (folder.progress ?? 0) + '%' }}
-                                        />
-                                      </div>
-                                      <span className="shrink-0 text-[10px] font-mono font-semibold text-emerald-300">
-                                        {Number(folder.progress ?? 0).toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '')}%
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {folder.active ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleCancelSeedrDownload()}
-                                    disabled={isCancellingSeedr || seedrNotice?.taskId == null}
-                                    className="shrink-0 px-2.5 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 disabled:opacity-40 disabled:cursor-not-allowed text-[10px] font-bold transition"
-                                    title="Cancel Seedr download"
-                                  >
-                                    {isCancellingSeedr ? 'Cancelling…' : 'Cancel'}
-                                  </button>
-                                ) : (
-                                  <div className="shrink-0 flex items-center gap-1.5">
-                                    {isMedia && (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleStreamSeedrFile(file)}
-                                        className="px-2.5 py-1.5 rounded-lg bg-cyan-500 text-slate-950 font-bold text-xs hover:bg-cyan-400 transition"
-                                      >
-                                        Stream
-                                      </button>
-                                    )}
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDownloadSeedrFile(file.id)}
-                                      className="px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
-                                    >
-                                      Download
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteSeedrFile(file)}
-                                      className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 transition"
-                                      title="Delete this file"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        }
-
+                        // Seedr always stores a torrent as a folder. Keep the
+                        // top-level library consistent even when the folder has
+                        // only one file; open it to access file actions.
+                        return (
                         return (
                           <div
                             key={folder.folderId}
@@ -1713,7 +1685,7 @@ export default function App() {
                                     onClick={() => handleDownloadSeedrFolder(folder.folderId)}
                                     className="px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
                                   >
-                                    Download ZIP
+                                    Download
                                   </button>
                                   <button
                                     type="button"
@@ -1799,6 +1771,15 @@ export default function App() {
                                     className="px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
                                   >
                                     Download
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleCopySeedrFileUrl(file.id)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
+                                    title="Copy direct download URL"
+                                  >
+                                    <Copy className="w-3.5 h-3.5" />
+                                    {copiedSeedrFileId === file.id ? 'Copied' : 'Copy URL'}
                                   </button>
                                   <button
                                     type="button"
