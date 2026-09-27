@@ -2056,7 +2056,7 @@ export default function App() {
                   </div>
                 ) : null}
 
-                {files.length > 0 && (
+                {visibleFiles.length > 0 && (
                   <div className="grid grid-cols-1 gap-2.5">
                     {visibleFiles.map((file) => (
                       <FileCard
