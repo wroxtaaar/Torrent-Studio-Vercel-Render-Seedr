@@ -102,26 +102,24 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   const inspectTimeoutRef = useRef<any>(null);
   const [copiedMagnet, setCopiedMagnet] = useState(false);
 
-  // Reset or initialize modal state
+  // Reset/initialize from the parent-provided source on every open or
+  // whenever a different search result is selected. This prevents the prior
+  // torrent's metadata from surviving into the next selection.
   useEffect(() => {
-    if (isOpen && !initialMagnet.trim()) {
-      // A normal Add Magnet open must always start clean. Otherwise a
-      // previously opened search result can leak into the next session.
-      setMagnetInput('');
-      setInspectedFiles([]);
-      setInspectedHash('');
-      setInspectedTorrentName('');
-      setInspectionSource('');
-      setCopiedMagnet(false);
-    }
+    if (!isOpen) return;
 
-    if (isOpen) {
-      setBackgroundMode(false);
-      setError('');
-      setShowManifestEditor(false);
-      setPasteManifestText('');
-      setSeedrSelectionTestResult(null);
-    }
+    const source = initialMagnet.trim();
+    setMagnetInput(source);
+    setInspectedFiles([]);
+    setInspectedHash('');
+    setInspectedTorrentName('');
+    setInspectionSource('');
+    setCopiedMagnet(false);
+    setBackgroundMode(false);
+    setError('');
+    setShowManifestEditor(false);
+    setPasteManifestText('');
+    setSeedrSelectionTestResult(null);
   }, [isOpen, initialMagnet]);
 
   const classifyFileType = (name: string): InspectFileItem['type'] => {
