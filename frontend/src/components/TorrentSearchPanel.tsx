@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Search,
+  X,
   Loader2,
   Download,
   ExternalLink,
@@ -185,8 +186,26 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
                 if (recentSearches.length > 0) setShowRecentSearches(true);
               }}
               placeholder="Search movies, TV, music, software..."
-              className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/20"
+              className="w-full pl-9 pr-10 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/20"
             />
+            {query && (
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  setQuery('');
+                  setError('');
+                  setSearched(false);
+                  setResults([]);
+                  setShowRecentSearches(recentSearches.length > 0);
+                }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition"
+                title="Clear search"
+                aria-label="Clear search"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
 
             {showRecentSearches && recentSearches.length > 0 && (
               <div className="absolute left-0 right-0 top-full mt-2 z-30 rounded-xl border border-slate-700 bg-slate-900 shadow-2xl overflow-hidden">
@@ -195,29 +214,52 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
                 </div>
                 <div className="max-h-72 overflow-y-auto">
                   {recentSearches.slice(0, 7).map((search, index) => (
-                    <button
+                    <div
                       key={search}
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        setQuery(search);
-                        setError('');
-                        setShowRecentSearches(false);
-                        // A recent search is already a known-good query, so
-                        // run it immediately instead of making the user press
-                        // Search again.
-                        window.setTimeout(() => {
-                          const form = document.querySelector('form[data-torrent-search="true"]') as HTMLFormElement | null;
-                          form?.requestSubmit();
-                        }, 0);
-                      }}
-                      className="w-full px-3 py-2.5 text-left flex items-center gap-2.5 border-b border-slate-800/70 last:border-b-0 hover:bg-slate-800 active:bg-slate-700 transition"
+                      className="flex items-center gap-1 border-b border-slate-800/70 last:border-b-0 hover:bg-slate-800 transition"
                     >
-                      <span className="w-5 h-5 shrink-0 rounded-md bg-slate-800 text-slate-500 text-[10px] font-bold flex items-center justify-center">
-                        {index + 1}
-                      </span>
-                      <span className="truncate text-xs text-slate-200">{search}</span>
-                    </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setQuery(search);
+                          setError('');
+                          setShowRecentSearches(false);
+                          // A recent search is already a known-good query, so
+                          // run it immediately instead of making the user press
+                          // Search again.
+                          window.setTimeout(() => {
+                            const form = document.querySelector('form[data-torrent-search="true"]') as HTMLFormElement | null;
+                            form?.requestSubmit();
+                          }, 0);
+                        }}
+                        className="min-w-0 flex-1 px-3 py-2.5 text-left flex items-center gap-2.5 active:bg-slate-700 transition"
+                      >
+                        <span className="w-5 h-5 shrink-0 rounded-md bg-slate-800 text-slate-500 text-[10px] font-bold flex items-center justify-center">
+                          {index + 1}
+                        </span>
+                        <span className="truncate text-xs text-slate-200">{search}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setRecentSearches(prev => {
+                            const next = prev.filter(item => item !== search);
+                            try {
+                              localStorage.setItem('seedflow_recent_searches', JSON.stringify(next));
+                            } catch {}
+                            return next;
+                          });
+                        }}
+                        className="mr-2 p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700 transition shrink-0"
+                        title="Delete recent search"
+                        aria-label={`Delete recent search: ${search}`}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>
