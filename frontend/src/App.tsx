@@ -1814,24 +1814,6 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-6 pb-24 md:pb-12">
-        {/* Storage Alert Warning Banner if capacity high */}
-        {storageStats && storageStats.alertLevel !== 'normal' && (
-          <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-300">
-            <div className="flex items-center gap-2.5">
-              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
-              <span>
-                Storage capacity advisory: {storageStats.usedPercentage}% of server disk is occupied. Auto-cleanup is active.
-              </span>
-            </div>
-            <button
-              onClick={() => setIsCleanupOpen(true)}
-              className="px-3 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 font-bold transition shrink-0 ml-2"
-            >
-              Inspect Disk
-            </button>
-          </div>
-        )}
-
         {seedrAddBlockedNotice && (
           <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-2.5 shadow-lg">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
@@ -1882,9 +1864,25 @@ export default function App() {
                           <div className="text-[10px] uppercase tracking-wide text-slate-500">Consumed</div>
                           <div className="text-sm font-bold text-slate-100 mt-0.5">{formatBytes(seedrQuota.usedSpace)}</div>
                         </div>
-                        <div className="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2">
-                          <div className="text-[10px] uppercase tracking-wide text-slate-500">Remaining</div>
-                          <div className={`text-sm font-bold mt-0.5 ${seedrQuota.remainingSpace > 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                        <div
+                          className={`rounded-lg px-3 py-2 border transition-all duration-300 ${
+                            seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3
+                              ? 'border-amber-400/60 bg-amber-400/10 ring-1 ring-amber-400/25 shadow-[0_0_18px_rgba(251,191,36,0.18)]'
+                              : 'bg-slate-900/80 border-slate-800'
+                          }`}
+                        >
+                          <div className={`text-[10px] uppercase tracking-wide ${
+                            seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3
+                              ? 'text-amber-300'
+                              : 'text-slate-500'
+                          }`}>Remaining</div>
+                          <div className={`text-sm font-bold mt-0.5 ${
+                            seedrQuota.remainingSpace <= 0
+                              ? 'text-rose-300'
+                              : seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3
+                                ? 'text-amber-300'
+                                : 'text-emerald-300'
+                          }`}>
                             {formatQuotaBytes(seedrQuota.remainingSpace)}
                           </div>
                         </div>
