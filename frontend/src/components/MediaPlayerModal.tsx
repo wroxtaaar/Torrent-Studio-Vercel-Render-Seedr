@@ -86,9 +86,16 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       ? file.streamUrl.replace('/api/torrents/stream/', '/api/torrents/direct-stream/')
       : file.streamUrl;
 
+    // Seedr supplies the exact HLS URL that external players use (e.g. MX
+    // Player). Try that URL first in Hls.js; if browser CORS blocks it, fall
+    // back automatically to our Render same-origin proxy.
+    const preferredSeedrUrl = file.externalStreamUrl || directBaseUrl;
     const streamUrl = selectedAudioIndex !== undefined
-      ? `${directBaseUrl}${directBaseUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
-      : directBaseUrl;
+      ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
+      : preferredSeedrUrl;
+    const fallbackStreamUrl = file.externalStreamUrl && file.streamUrl !== file.externalStreamUrl
+      ? file.streamUrl
+      : '';
 
     const restoreTime = resumeTimeRef.current;
     const restorePlaying = resumePlayingRef.current || (!media.paused && duration > 0);
@@ -119,20 +126,42 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       streamUrl.includes('/api/seedr/hls/');
 
     if (isHlsStream && isVideo && Hls.isSupported()) {
-      hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: false,
-      });
-      hls.loadSource(streamUrl);
-      hls.attachMedia(media as HTMLMediaElement);
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data?.fatal) {
+      let triedFallback = false;
+
+      const startHls = (sourceUrl: string) => {
+        hls?.destroy();
+        hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+          backBufferLength: 90,
+        });
+        hls.loadSource(sourceUrl);
+        hls.attachMedia(media as HTMLMediaElement);
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (!data?.fatal) return;
+
+          console.warn('[MEDIA][HLS] fatal error', {
+            details: data?.details,
+            type: data?.type,
+            response: data?.response?.code,
+            url: sourceUrl,
+          });
+
+          if (!triedFallback && fallbackStreamUrl && sourceUrl !== fallbackStreamUrl) {
+            triedFallback = true;
+            setTrackNotice('Trying browser-compatible stream…');
+            startHls(fallbackStreamUrl);
+            return;
+          }
+
           setMediaError(data?.details || 'Unable to play the HLS stream.');
           setTrackNotice('');
           hls?.destroy();
           hls = null;
-        }
-      });
+        });
+      };
+
+      startHls(streamUrl);
     } else if (isHlsStream && isVideo && media.canPlayType('application/vnd.apple.mpegurl')) {
       media.src = streamUrl;
       media.load();
@@ -362,7 +391,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         {isVideo ? (
           <video
             ref={videoRef}
-            src={file.streamUrl}
+            src={file.externalStreamUrl || file.streamUrl}
             className="w-full h-32 object-contain bg-black rounded-lg"
             onTimeUpdate={onTimeUpdate}
             onLoadedMetadata={onLoadedMetadata}
