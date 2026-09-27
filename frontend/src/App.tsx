@@ -316,11 +316,6 @@ export default function App() {
   // Two-stage Seedr playback UX: first show progress while resolving the
   // stream URL, then the player shows its own browser-loading state.
   const [seedrStreamLoadingId, setSeedrStreamLoadingId] = useState<string | null>(null);
-  const [seedrSelectionContext, setSeedrSelectionContext] = useState<{
-    remainingSpace: number;
-    torrentSize: number;
-    torrentName: string;
-  } | null>(null);
   const [isCancellingSeedr, setIsCancellingSeedr] = useState(false);
   const [activeSeedrFolderOpen, setActiveSeedrFolderOpen] = useState(false);
   const [selectedSeedrFolderId, setSelectedSeedrFolderId] = useState<string | null>(() => {
@@ -1152,8 +1147,8 @@ export default function App() {
           status: 'waiting',
           progress: 0,
           downloadUrl: null,
-          // Show the user's selected files immediately. Seedr can take a few
-          // seconds before its filesystem endpoint exposes the real entries.
+          // Seedr receives the complete torrent. When the full torrent does not
+          // fit, the selector routes the selected-file download to qBittorrent.
           files: (manifest || [])
             .map((file, index) => ({ file, index }))
             .filter(({ file }) => Number(file.priority || 0) > 0)
@@ -1171,8 +1166,8 @@ export default function App() {
             const state = response?.state ?? response?.task?.state ?? response?.status ?? response?.task?.status;
             return state ? `Seedr replied: ${String(state)}` : 'Seedr replied: task accepted';
           })(),
-          selectionApplied: (result as any).selectionApplied,
-          selectionError: (result as any).selectionError,
+          selectionApplied: false,
+          selectionError: 'Seedr transfers the complete torrent; selected-file transfer is not supported.',
         });;
       } else {
         setSeedrNotice(null);
@@ -3002,7 +2997,6 @@ export default function App() {
           setInitialMagnet('');
           setInitialSourceUrl('');
           setInitialDescriptorUrl('');
-          setSeedrSelectionContext(null);
         }}
         onOpen={() => {
           openAddMagnet(initialMagnet);
@@ -3019,7 +3013,6 @@ export default function App() {
         initialMagnet={initialMagnet}
         initialSourceUrl={initialSourceUrl}
         initialDescriptorUrl={initialDescriptorUrl}
-        selectionReason={seedrSelectionContext}
       />
 
       <FilePrioModal
