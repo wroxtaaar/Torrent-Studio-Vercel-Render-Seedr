@@ -2755,30 +2755,35 @@ async def seedr_file_stream(
     resolved_id = await resolve_seedr_stream_id(file_id, name)
 
     if type == "video":
-        # Prefer an HLS presentation for browsers. This explicitly supports
-        # Seedr conversion for MKV/other containers instead of handing Chrome
-        # the original container, which commonly produces media error 4.
+        # Seedr's V2 presentation URL is already browser-playable for the
+        # direct ff_get/presentation responses we have verified in Chrome,
+        # including Range-based seeking. Proxy that URL through our own
+        # same-origin endpoint so the browser never needs Seedr CORS headers
+        # and the Seedr URL/token is not exposed to the page.
+        #
+        # HLS is intentionally kept as a fallback. It is more expensive and
+        # can introduce an unnecessary conversion/proxy layer when Seedr
+        # already provides a browser-compatible presentation.
+        presentation_url = await seedr_v2_video_url(resolved_id)
+        if presentation_url:
+            return {
+                "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
+                "externalUrl": presentation_url,
+                "name": name or resolved_id,
+                "resolvedFileId": resolved_id,
+                "protocol": "direct",
+            }
+
         try:
             await _fetch_seedr_hls_manifest(resolved_id)
-            browser_url = "/api/seedr/hls/" + quote(resolved_id, safe="")
-            presentation_url = await seedr_v2_video_url(resolved_id)
             return {
-                "url": browser_url,
-                "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
+                "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
+                "externalUrl": _seedr_media_url(resolved_id, "video"),
                 "name": name or resolved_id,
                 "resolvedFileId": resolved_id,
                 "protocol": "hls",
             }
         except HTTPException:
-            presentation_url = await seedr_v2_video_url(resolved_id)
-            if presentation_url:
-                return {
-                    "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
-                    "externalUrl": presentation_url,
-                    "name": name or resolved_id,
-                    "resolvedFileId": resolved_id,
-                    "protocol": "direct",
-                }
             raise
 
     return {
