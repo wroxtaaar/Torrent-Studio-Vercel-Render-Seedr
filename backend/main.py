@@ -3113,13 +3113,34 @@ async def seedr_folder_payload(folder_id: str) -> dict[str, Any]:
             return cached[1]
 
         try:
-            # Seedr exposes the account root through /api/folder; numeric
-            # folder IDs use the /fs/folder/{id}/contents endpoint.
+            # Root access is inconsistent across Seedr API variants/accounts.
+            # Prefer the normal bearer-authenticated filesystem endpoint, then
+            # fall back to the dedicated root endpoint and finally the legacy
+            # list_contents endpoint. A failure in one variant must not be
+            # presented as a token failure when another variant works.
             if folder_id == "0":
-                # Prefer the legacy list_contents endpoint for the account root.
-                # The free-token integration supports this even when the modern
-                # root filesystem endpoint responds with access_denied.
-                payload = seedr_data(await legacy_seedr_list_contents("0"))
+                root_errors: list[str] = []
+
+                try:
+                    payload = seedr_data(await seedr_request("/fs/folder/0/contents"))
+                    logger.info("Seedr library root resolved via bearer fs endpoint")
+                except (HTTPException, SeedrError) as exc:
+                    root_errors.append(f"fs:{getattr(exc, 'status_code', 0)}")
+                    try:
+                        payload = seedr_data(await seedr_root_request())
+                        logger.info("Seedr library root resolved via dedicated root endpoint")
+                    except (HTTPException, SeedrError) as root_exc:
+                        root_errors.append(f"root:{getattr(root_exc, 'status_code', 0)}")
+                        try:
+                            payload = seedr_data(await legacy_seedr_list_contents("0"))
+                            logger.info("Seedr library root resolved via legacy list_contents endpoint")
+                        except (HTTPException, SeedrError) as legacy_exc:
+                            root_errors.append(f"legacy:{getattr(legacy_exc, 'status_code', 0)}")
+                            logger.warning(
+                                "Seedr library root resolution failed across all API variants: %s",
+                                ",".join(root_errors),
+                            )
+                            raise legacy_exc
             else:
                 payload = seedr_data(await seedr_request(f"/fs/folder/{quote(folder_id)}/contents"))
         except HTTPException as exc:
@@ -3350,12 +3371,12 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
                 "/Torrent Studio",
                 folder_name_overrides,
             )
-        except HTTPException as exc:
+        except (HTTPException, SeedrError) as exc:
             # Some Seedr API tokens can read tasks and file operations while
             # denying the account-root filesystem listing. Reconstruct the
             # visible library from task folder IDs instead of failing the
             # entire Seedr Library panel.
-            if exc.status_code not in {401, 403} or not task_folders:
+            if getattr(exc, "status_code", 0) not in {401, 403} or not task_folders:
                 raise
 
             unique_folders: dict[str, str] = {}
@@ -3372,7 +3393,7 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
             async def load_task_folder(folder_id: str, name: str) -> dict[str, Any] | None:
                 try:
                     payload = await seedr_folder_payload(folder_id)
-                except HTTPException:
+                except (HTTPException, SeedrError):
                     return None
                 if not payload:
                     return None
