@@ -341,6 +341,7 @@ _seedr_metadata_cache: tuple[float, dict[str, Any]] | None = None
 _seedr_metadata_task: asyncio.Task | None = None
 _seedr_folder_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _seedr_torrent_names: dict[str, str] = {}
+_seedr_torrent_names_by_task: dict[str, str] = {}
 
 async def collect_folder(folder_id: str, path: str = "/", depth: int = 0) -> list[dict[str, Any]]:
     if depth > 8:
@@ -1208,7 +1209,14 @@ async def seedr_add(body: MagnetRequest):
         raise HTTPException(502, "Seedr did not return a task id")
 
     torrent_name = str(body.torrent_name or "").strip()
+    task_id_value = str(tid).strip()
     task_folder_id = seedr_task_folder_id(task)
+
+    # Keep the exact title chosen in the search result tied to the task even
+    # when Seedr has not created/exposed its folder yet.
+    if torrent_name and task_id_value:
+        _seedr_torrent_names_by_task[task_id_value] = torrent_name
+
     folder_renamed = False
     if torrent_name and task_folder_id:
         _seedr_torrent_names[task_folder_id] = torrent_name
@@ -1256,11 +1264,25 @@ async def seedr_task_progress(tid: str):
     )
 
     task_folder_id = seedr_task_folder_id(task)
-    seedr_task_display_name = str(
-        _seedr_torrent_names.get(task_folder_id)
+    task_id_value = str(tid).strip()
+
+    canonical_name = str(
+        _seedr_torrent_names_by_task.get(task_id_value)
+        or _seedr_torrent_names.get(task_folder_id)
         or seedr_task_name(task)
         or ""
     ).strip()
+
+    if task_folder_id and canonical_name:
+        _seedr_torrent_names[task_folder_id] = canonical_name
+        # Seedr can expose the folder only after the task starts. Rename at
+        # that point, rather than only immediately after /tasks POST.
+        try:
+            await rename_seedr_folder(task_folder_id, canonical_name)
+        except Exception:
+            pass
+
+    seedr_task_display_name = canonical_name
     return {
         "taskId": tid,
         "status": status,
@@ -1284,7 +1306,20 @@ async def seedr_task(tid: str):
         progress = 100
     files = await task_contents(tid)
     folder_id = seedr_task_folder_id(task) or str(files[0].get("folderId") if files else "")
-    folderNameValue = await folder_name(folder_id) if folder_id else ""
+    task_id_value = str(tid).strip()
+    canonical_name = str(
+        _seedr_torrent_names_by_task.get(task_id_value)
+        or _seedr_torrent_names.get(folder_id)
+        or seedr_task_name(task)
+        or ""
+    ).strip()
+    if folder_id and canonical_name:
+        _seedr_torrent_names[folder_id] = canonical_name
+        try:
+            await rename_seedr_folder(folder_id, canonical_name)
+        except Exception:
+            pass
+    folderNameValue = canonical_name or (await folder_name(folder_id) if folder_id else "")
     for f in files:
         f["folderPath"] = "/Torrent Studio" + ("/" + folderNameValue if folderNameValue else "")
         f["url"] = None
@@ -1477,6 +1512,7 @@ async def get_seedr_metadata_tree() -> dict[str, Any]:
 
                 if task_folder_id and task_name:
                     folder_name_overrides[task_folder_id] = task_name
+                    _seedr_torrent_names[task_folder_id] = task_name
         except HTTPException:
             # Folder metadata remains usable even when task-name lookup fails.
             pass
