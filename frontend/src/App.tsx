@@ -279,7 +279,8 @@ export default function App() {
 
     const groups: SeedrFolderGroup[] = seedrLibraryFolders.map(folder => {
       const folderId = folder.folderId || folder.id;
-      const torrentName = seedrTorrentNames[folderId];
+      const savedTorrentName = seedrTorrentNames[folderId];
+      const torrentName = String(folder.torrentName || savedTorrentName || '').trim();
       return {
       folderId,
       name: torrentName || folder.name,
@@ -843,7 +844,7 @@ export default function App() {
       );
       if (result.backend === 'seedr') {
         const initialTorrentName = String(torrentName || '').trim();
-        const returnedFolderId = String((result as any).seedrFolderId || '').trim();
+        const returnedFolderId = String((result as any).seedrFolderId || (result as any).seedrResponse?.folder_id || '').trim();
         if (returnedFolderId && initialTorrentName) {
           rememberSeedrTorrentName(returnedFolderId, initialTorrentName);
         }
