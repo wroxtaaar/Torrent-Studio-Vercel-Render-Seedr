@@ -34,8 +34,6 @@ class MagnetRequest(BaseModel):
     magnet: str
     folder_id: str | int | None = None
 
-class GenericBody(BaseModel):
-    [key: str]: Any
 
 def seedr_data(value: Any) -> Any:
     if isinstance(value, dict) and "data" in value:
