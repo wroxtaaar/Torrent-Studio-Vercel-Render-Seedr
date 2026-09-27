@@ -55,6 +55,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_timing_allow_origin(request: Request, call_next):
+    # Allows the frontend to read Resource Timing transfer sizes for the
+    # cross-origin Render media stream when the frontend is hosted on Vercel.
+    response = await call_next(request)
+    response.headers["Timing-Allow-Origin"] = "*"
+    return response
+
 class MagnetRequest(BaseModel):
     magnet: str
     folder_id: str | int | None = None
