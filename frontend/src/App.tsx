@@ -83,6 +83,23 @@ export default function App() {
       return 'search';
     }
   });
+  type BackgroundMetadataJobRecord = {
+    jobId: string;
+    hash: string;
+    name: string;
+    status: string;
+    rounds: number;
+    startedAt: number;
+    updatedAt: number;
+    deadlineAt: number;
+    elapsedSeconds: number;
+    remainingSeconds: number;
+    fileCount: number;
+    totalSize: number;
+    source: string;
+    error?: string | null;
+  };
+
   const [backgroundMetadataJob, setBackgroundMetadataJob] = useState<{
     active: boolean;
     title: string;
@@ -91,6 +108,8 @@ export default function App() {
     error?: string;
     jobId?: string;
   } | null>(null);
+  const [backgroundMetadataJobs, setBackgroundMetadataJobs] = useState<BackgroundMetadataJobRecord[]>([]);
+  const [backgroundMetadataLoading, setBackgroundMetadataLoading] = useState(false);
 
   // Keep background metadata jobs connected to the UI after the selector closes.
   // Once a resolver finishes, the cached metadata is immediately available when
@@ -139,6 +158,35 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [backgroundMetadataJob?.active, backgroundMetadataJob?.jobId]);
+  const refreshBackgroundMetadataJobs = useCallback(async () => {
+    try {
+      setBackgroundMetadataLoading(true);
+      const data = await api.getTorrentMetadataJobs();
+      setBackgroundMetadataJobs(Array.isArray(data?.jobs) ? data.jobs : []);
+    } catch {
+      // Metadata jobs are best-effort UI state. A transient API/Render wake-up
+      // failure must not affect the rest of the Files screen.
+    } finally {
+      setBackgroundMetadataLoading(false);
+    }
+  }, []);
+
+  // Restore the server-side metadata queue when the page loads. Keep polling
+  // while at least one job is still resolving, then slow down once everything
+  // is terminal so the list remains useful without unnecessary requests.
+  const hasActiveBackgroundMetadataJobs = backgroundMetadataJobs.some(
+    job => job.status === 'queued' || job.status === 'resolving'
+  );
+
+  useEffect(() => {
+    void refreshBackgroundMetadataJobs();
+    const timer = window.setInterval(
+      () => { void refreshBackgroundMetadataJobs(); },
+      hasActiveBackgroundMetadataJobs ? 3000 : 15000
+    );
+    return () => window.clearInterval(timer);
+  }, [refreshBackgroundMetadataJobs, hasActiveBackgroundMetadataJobs]);
+
   const [initialSourceUrl, setInitialSourceUrl] = useState('');
   const [initialDescriptorUrl, setInitialDescriptorUrl] = useState('');
 
@@ -2502,6 +2550,86 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {(backgroundMetadataJobs.length > 0 || backgroundMetadataLoading) && (
+                  <div className="mt-3 rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-100">Background metadata</div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          Slow metadata lookups keep retrying for up to 6 hours. Jobs are independent of Seedr downloads.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { void refreshBackgroundMetadataJobs(); }}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+
+                    <div className="divide-y divide-slate-800">
+                      {backgroundMetadataJobs.map((job) => {
+                        const active = job.status === 'queued' || job.status === 'resolving';
+                        const terminalReady = job.status === 'ready';
+                        const elapsedSeconds = Math.max(0, Number(job.elapsedSeconds || 0));
+                        const remainingSeconds = Math.max(0, Number(job.remainingSeconds || 0));
+                        const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+                        const elapsedHours = Math.floor(elapsedMinutes / 60);
+                        const elapsedLabel = elapsedHours > 0
+                          ? `${elapsedHours}h ${elapsedMinutes % 60}m`
+                          : `${elapsedMinutes}m`;
+                        const remainingHours = Math.floor(remainingSeconds / 3600);
+                        const remainingMinutes = Math.floor((remainingSeconds % 3600) / 60);
+                        const remainingLabel = remainingHours > 0
+                          ? `${remainingHours}h ${remainingMinutes}m remaining`
+                          : `${Math.max(1, remainingMinutes)}m remaining`;
+                        const displayName = job.name || (job.hash ? `Torrent ${job.hash.slice(0, 12)}…` : 'Torrent metadata job');
+
+                        return (
+                          <div key={job.jobId} className="px-4 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
+                            <div className="shrink-0">
+                              <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${terminalReady ? 'bg-emerald-500/10 text-emerald-400' : job.status === 'error' ? 'bg-rose-500/10 text-rose-400' : 'bg-cyan-500/10 text-cyan-400'}`}>
+                                {terminalReady ? '✓' : job.status === 'error' ? '✗' : <Loader2 className="w-4 h-4 animate-spin" />}
+                              </div>
+                            </div>
+
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-semibold text-slate-100 truncate" title={displayName}>{displayName}</div>
+                              <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">{job.hash}</div>
+                              <div className="text-[11px] text-slate-400 mt-1">
+                                {terminalReady
+                                  ? `Completed • ${job.fileCount || 0} files • ${formatBytes(Number(job.totalSize || 0))}`
+                                  : job.status === 'error'
+                                    ? (job.error || 'Metadata resolution failed.')
+                                    : `Resolving • round ${job.rounds || 0} • ${elapsedLabel} elapsed • ${remainingLabel}`}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className={`px-2 py-1 rounded-lg text-[10px] font-semibold ${terminalReady ? 'bg-emerald-500/10 text-emerald-300' : job.status === 'error' ? 'bg-rose-500/10 text-rose-300' : 'bg-cyan-500/10 text-cyan-300'}`}>
+                                {terminalReady ? 'Completed' : job.status === 'error' ? 'Failed' : active ? 'Resolving' : job.status}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const magnet = job.hash ? `magnet:?xt=urn:btih:${job.hash}` : '';
+                                  openAddMagnet(magnet);
+                                  setActiveTab('files');
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold"
+                              >
+                                Open
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+}
 
           </div>
         )}
