@@ -527,9 +527,6 @@ export default function App() {
                 ...prev,
                 [folderKey]: mapped,
               }));
-              setSeedrFiles(current => (
-                selectedSeedrFolderId === folderKey ? mapped : current
-              ));
             } catch (error) {
               console.warn('Failed to prefetch Seedr folder:', folder.name, error);
             }
@@ -554,7 +551,18 @@ export default function App() {
       setSeedrLoading(false);
       setSeedrPrefetchLoading(false);
     }
-  }, [selectedSeedrFolderId]);
+  }, []);
+
+  // Keep an opened folder synchronized with the background prefetch cache.
+  // Changing the selected folder no longer reruns the entire library request.
+  useEffect(() => {
+    if (!selectedSeedrFolderId) return;
+    const cached = seedrFolderContentsCache[selectedSeedrFolderId];
+    if (!cached) return;
+
+    setSeedrFiles(cached);
+    setSeedrFolderContentsLoading(false);
+  }, [selectedSeedrFolderId, seedrFolderContentsCache]);
 
   const handleOpenSeedrFolder = useCallback(async (folderId: string) => {
     if (!folderId || folderId === '__root__' || folderId === '__active_seedr__') return;
@@ -1845,7 +1853,12 @@ export default function App() {
                           <div className="flex items-center justify-between gap-3 mb-3">
                             <button
                               type="button"
-                              onClick={() => setSelectedSeedrFolderId(null)}
+                              onClick={() => {
+                                setSelectedSeedrFolderId(null);
+                                setSeedrFiles([]);
+                                setSeedrFolderContentsLoading(false);
+                                setSeedrError(null);
+                              }}
                               className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5"
                             >
                               ← Back to folders
