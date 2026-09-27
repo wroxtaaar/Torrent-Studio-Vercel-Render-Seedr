@@ -2420,6 +2420,119 @@ async def seedr_prepare(body: MagnetRequest):
         "paused": False,
     }
 
+@app.post("/api/seedr/tasks/add-selected")
+async def seedr_add_selected(body: dict[str, Any]):
+    """Add a magnet to Seedr, then mark every unselected file as unwanted.
+
+    This is the experimental selective-download path for validating whether
+    a Free Seedr account accepts a multi-file torrent and honors its unwanted
+    bitmap before fetching unwanted payload.
+    """
+    if not SEEDR_TOKEN:
+        raise HTTPException(503, "Seedr is not configured")
+
+    folder = str(body.get("folder_id") or SEEDR_LIBRARY_FOLDER_ID).strip()
+    if not folder.isdigit():
+        raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
+
+    magnet = normalize_magnet(str(body.get("magnet") or "").strip())
+    h = info_hash(magnet)
+    if not h:
+        raise HTTPException(400, "A valid BTIH magnet link is required")
+
+    raw_files = body.get("files")
+    selected_indexes = body.get("selectedIndexes")
+    if not isinstance(raw_files, list) or not raw_files:
+        raise HTTPException(400, "Torrent file metadata is required")
+    if not isinstance(selected_indexes, list) or not selected_indexes:
+        raise HTTPException(400, "Select at least one file")
+
+    metadata_indexes: list[int] = []
+    for item in raw_files:
+        if not isinstance(item, dict):
+            raise HTTPException(400, "Invalid torrent file metadata")
+        try:
+            idx = int(item.get("index"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Invalid torrent file index")
+        metadata_indexes.append(idx)
+
+    selected_set: set[int] = set()
+    for value in selected_indexes:
+        try:
+            selected_set.add(int(value))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Invalid selected file index")
+
+    unknown = selected_set.difference(metadata_indexes)
+    if unknown:
+        raise HTTPException(400, f"Selected file index not present in metadata: {sorted(unknown)}")
+
+    # Seedr's unwanted representation is a base64-encoded bitmap where bit N
+    # corresponds to the Nth torrent file: 1 = unwanted, 0 = wanted.
+    max_index = max(metadata_indexes)
+    bitmap = bytearray((max_index // 8) + 1)
+    for idx in metadata_indexes:
+        if idx not in selected_set:
+            bitmap[idx // 8] |= 1 << (idx % 8)
+    unwanted_b64 = base64.b64encode(bytes(bitmap)).decode("ascii")
+
+    existing = await find_task_by_hash(h)
+    created = False
+    task = existing
+    if not task:
+        task = await add_task(magnet, int(folder))
+        created = True
+
+    task = unwrap_seedr_task(task)
+    tid = task_id(task)
+    if not tid:
+        raise HTTPException(502, "Seedr did not return a task id")
+
+    write_result: Any = None
+    write_error: str | None = None
+
+    try:
+        write_result = seedr_data(
+            await seedr_request(
+                f"/tasks/{quote(tid)}/unwanted",
+                "POST",
+                {"unwanted": unwanted_b64},
+                form=True,
+            )
+        )
+    except HTTPException as exc:
+        write_error = str(exc.detail)
+        if created:
+            logger.warning("Selective Seedr write failed for new task %s: %s", tid, write_error)
+
+    try:
+        verify = seedr_data(await seedr_request(f"/tasks/{quote(tid)}/unwanted"))
+    except HTTPException:
+        verify = None
+
+    torrent_name = str(body.get("torrentName") or "").strip() or seedr_task_name(task) or f"Torrent {tid}"
+    task_folder_id = seedr_task_folder_id(task)
+    if created:
+        schedule_seedr_cleanup(tid, torrent_name, task_folder_id)
+
+    return {
+        "backend": "seedr",
+        "taskId": int(tid) if tid.isdigit() else tid,
+        "created": created,
+        "torrentName": torrent_name,
+        "folderId": task_folder_id or None,
+        "selectedIndexes": sorted(selected_set),
+        "selectedSize": sum(int(item.get("size") or 0) for item in raw_files if int(item.get("index")) in selected_set),
+        "totalSize": sum(int(item.get("size") or 0) for item in raw_files),
+        "unwanted": unwanted_b64,
+        "writeAccepted": write_error is None,
+        "writeResult": write_result,
+        "writeError": write_error,
+        "verifiedUnwanted": verify,
+    }
+
+
 @app.post("/api/seedr/add")
 async def seedr_add(body: MagnetRequest):
     if not SEEDR_TOKEN:
