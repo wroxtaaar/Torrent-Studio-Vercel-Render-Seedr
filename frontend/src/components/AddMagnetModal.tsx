@@ -44,7 +44,7 @@ interface AddMagnetModalProps {
   initialMagnet?: string;
   initialSourceUrl?: string;
   initialDescriptorUrl?: string;
-  onBackgroundChange?: (state: { active: boolean; title: string; message: string; ready?: boolean; error?: string }) => void;
+  onBackgroundChange?: (state: { active: boolean; title: string; message: string; ready?: boolean; error?: string; jobId?: string }) => void;
   selectionReason?: {
     remainingSpace: number;
     torrentSize: number;
@@ -272,7 +272,8 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         onBackgroundChange?.({
           active: true,
           title: 'Resolving torrent metadata',
-          message: data.message || 'Still resolving in the background. Seedr has not been started.'
+          message: data.message || 'Still resolving in the background. Seedr has not been started.',
+          jobId: String((data as any).jobId || pendingHash || '')
         });
       }
       return;
