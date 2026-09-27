@@ -526,7 +526,7 @@ export default function App() {
     }
   }, [activeTab, loadCurrentFiles]);
 
-  const loadSeedrLibrary = useCallback(async () => {
+  const loadSeedrLibrary = useCallback(async (forceRefresh = false) => {
     setSeedrLoading(true);
     setSeedrError(null);
 
@@ -584,7 +584,7 @@ export default function App() {
 
       // Stage 1 — only the metadata required to paint the outer Seedr
       // Library immediately. Do not wait for quota or file rows.
-      const result = await api.getSeedrLibrary();
+      const result = await api.getSeedrLibrary(forceRefresh);
 
       setSeedrConfigured(result.configured);
       setSeedrLibraryRoot(result.root);
