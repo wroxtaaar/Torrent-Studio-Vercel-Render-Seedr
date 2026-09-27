@@ -41,12 +41,11 @@ export const api = {
       limit: String(Math.min(Math.max(limit, 1), 50))
     });
 
-    // Search is served by the Vercel function so it remains available even
-    // when the Render Seedr backend is asleep.
-    const searchBase = import.meta.env.DEV
-      ? API_BASE
-      : window.location.origin;
-    const res = await fetch(searchBase + '/api/search-fast?' + params.toString());
+    // Search is served by the Render backend alongside the Seedr API.
+    // Use the same API base in development and production so the frontend
+    // can be hosted independently as a Render Static Site.
+    const searchBase = API_BASE;
+    const res = await fetch(searchBase + '/api/search?' + params.toString());
     const body = await res.text();
 
     let data: any = null;
