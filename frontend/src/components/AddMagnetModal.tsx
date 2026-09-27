@@ -42,6 +42,8 @@ interface AddMagnetModalProps {
   ) => Promise<void>;
   defaultFolder?: string;
   initialMagnet?: string;
+  initialSourceUrl?: string;
+  onBackgroundChange?: (state: { active: boolean; title: string; message: string; ready?: boolean; error?: string }) => void;
   selectionReason?: {
     remainingSpace: number;
     torrentSize: number;
@@ -66,6 +68,8 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   onAdd,
   defaultFolder = 'Downloads',
   initialMagnet = '',
+  initialSourceUrl = '',
+  onBackgroundChange,
   selectionReason = null
 }) => {
   const [magnetInput, setMagnetInput] = useState('');
@@ -239,6 +243,13 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       setIsInspecting(true);
       setBackgroundMode(background);
       setError('');
+      if (background) {
+        onBackgroundChange?.({
+          active: true,
+          title: 'Resolving torrent metadata',
+          message: 'Working in the background. Seedr has not been started.'
+        });
+      }
       setInspectedFiles([]);
 
       // Metadata inspection must never add the magnet to Seedr. The backend
@@ -249,7 +260,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
           : 'Resolving torrent metadata without starting Seedr...'
       );
 
-      const data = await api.inspectMagnet(source, category);
+      const data = await api.inspectMagnet(source, category, initialSourceUrl);
 
       if (data && Array.isArray(data.files) && data.files.length > 0) {
         const hash = String(data.hash || '').trim().toLowerCase();
@@ -287,6 +298,14 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         }
 
          setInspectionSource(isSearchGrab ? '✓ Torrent metadata loaded • Multi-file torrent is not started while you choose files' : '✓ Torrent metadata loaded • Seedr is not started yet');
+        if (background) {
+          onBackgroundChange?.({
+            active: false,
+            title: 'Torrent metadata ready',
+            message: `${data.files.length} file${data.files.length === 1 ? '' : 's'} found. Open the selector when ready.`,
+            ready: true
+          });
+        }
         return;
       }
 
@@ -361,7 +380,16 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       console.warn('Inspect magnet error:', err);
       setInspectedFiles([]);
       setInspectionSource('');
-      setError(err?.message || 'Could not load torrent metadata.');
+      const message = err?.message || 'Could not load torrent metadata.';
+      setError(message);
+      if (background) {
+        onBackgroundChange?.({
+          active: false,
+          title: 'Torrent metadata failed',
+          message,
+          error: message
+        });
+      }
     } finally {
       setIsInspecting(false);
     }
