@@ -2329,6 +2329,7 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
         # call. The folder contents/counts and task list are independent, so
         # fetch them concurrently without adding a serial round trip.
         folder_name_overrides: dict[str, str] = dict(_seedr_torrent_names)
+        task_folders: list[tuple[str, str]] = []
         try:
             tasks_payload = seedr_data(await seedr_request("/tasks"))
             for raw_task in arr(tasks_payload, ("tasks", "torrents", "items")):
@@ -2338,6 +2339,9 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
 
                 task_folder_id = seedr_task_folder_id(task)
                 task_name = seedr_task_name(task)
+
+                if task_folder_id:
+                    task_folders.append((task_folder_id, task_name))
 
                 if task_folder_id and task_name:
                     # The title supplied by our search/add flow is canonical.
@@ -2353,11 +2357,64 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
             # Folder metadata remains usable even when task-name lookup fails.
             pass
 
-        root_summary, children = await build_seedr_metadata_tree(
-            root,
-            "/Torrent Studio",
-            folder_name_overrides,
-        )
+        try:
+            root_summary, children = await build_seedr_metadata_tree(
+                root,
+                "/Torrent Studio",
+                folder_name_overrides,
+            )
+        except HTTPException as exc:
+            # Some Seedr API tokens can read tasks and file operations while
+            # denying the account-root filesystem listing. Reconstruct the
+            # visible library from task folder IDs instead of failing the
+            # entire Seedr Library panel.
+            if exc.status_code not in {401, 403} or not task_folders:
+                raise
+
+            unique_folders: dict[str, str] = {}
+            for folder_id, task_name in task_folders:
+                if folder_id and folder_id != root:
+                    unique_folders.setdefault(
+                        folder_id,
+                        folder_name_overrides.get(folder_id)
+                        or _seedr_torrent_names.get(folder_id)
+                        or task_name
+                        or folder_id,
+                    )
+
+            async def load_task_folder(folder_id: str, name: str) -> dict[str, Any] | None:
+                try:
+                    payload = await seedr_folder_payload(folder_id)
+                except HTTPException:
+                    return None
+                if not payload:
+                    return None
+                summary = direct_folder_summary(
+                    folder_id,
+                    "/Torrent Studio/" + name,
+                    payload,
+                )
+                summary["torrentName"] = name
+                summary["folderCount"] = len(
+                    [x for x in arr(payload, ("folders", "directories")) if isinstance(x, dict)]
+                )
+                return summary
+
+            results = await asyncio.gather(
+                *(load_task_folder(folder_id, name) for folder_id, name in unique_folders.items()),
+                return_exceptions=True,
+            )
+            children = [result for result in results if isinstance(result, dict)]
+            root_summary = {
+                "id": root,
+                "folderId": root,
+                "name": "Torrent Studio",
+                "path": "/Torrent Studio",
+                "filesCount": sum(int(item.get("filesCount") or 0) for item in children),
+                "totalSize": sum(int(item.get("totalSize") or 0) for item in children),
+                "folderCount": len(children),
+            }
+
         return {
             "configured": True,
             "root": root_summary,
