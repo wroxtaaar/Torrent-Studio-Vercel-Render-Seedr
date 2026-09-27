@@ -985,7 +985,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
               </div>
 
               </div>
-            </div>
           )}
               </>
             )
