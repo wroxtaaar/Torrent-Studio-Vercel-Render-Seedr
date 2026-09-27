@@ -26,7 +26,7 @@ SEEDR_MAX_SIZE_GB = float(os.getenv("SEEDR_MAX_SIZE_GB", "5"))
 SEEDR_MAX_SIZE_BYTES = int(SEEDR_MAX_SIZE_GB * 1024**3)
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
-SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "4"))
+SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "8.5"))
 SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
 _search_cache: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
 app = FastAPI(title=APP_NAME)
