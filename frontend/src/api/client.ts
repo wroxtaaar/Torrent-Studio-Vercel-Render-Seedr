@@ -61,7 +61,21 @@ export const api = {
     // Use the same API base in development and production so the frontend
     // can be hosted independently as a Render Static Site.
     const searchBase = API_BASE;
-    const res = await fetch(searchBase + '/api/search?' + params.toString());
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 4000);
+    let res: Response;
+    try {
+      res = await fetch(searchBase + '/api/search?' + params.toString(), {
+        signal: controller.signal
+      });
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        throw new Error('Search timed out. Please try again.');
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
     const body = await res.text();
 
     let data: any = null;
