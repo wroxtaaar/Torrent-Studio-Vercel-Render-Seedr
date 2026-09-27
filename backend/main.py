@@ -1194,7 +1194,7 @@ async def search_knaben(query: str, limit: int = 100) -> list[dict[str, Any]]:
 
 
 async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
-    """Known-good broad Knaben search path used by the previous Vercel search API."""
+    """Broad torrent search: known-good Knaben first, aggregate Render search as fallback/supplement."""
     query = query.strip()
     if not query:
         return []
@@ -1213,102 +1213,119 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
         if token not in SEARCH_STOPWORDS
     ]
 
-    try:
-        async with httpx.AsyncClient(timeout=8.5, follow_redirects=True) as client:
-            response = await client.post(
-                KNABEN_API_URL,
-                json={
-                    "search_type": "100%",
-                    "search_field": "title",
-                    "query": normalized_query,
-                    "order_by": "seeders",
-                    "order_direction": "desc",
-                    "from": 0,
-                    "size": 300,
-                    "hide_unsafe": True,
-                    "hide_xxx": True,
-                    "seconds_since_last_seen": 604800,
-                },
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.info("Knaben search failed: %s", exc)
-        return []
+    async def aggregate_fallback() -> list[dict[str, Any]]:
+        try:
+            async with httpx.AsyncClient(timeout=8.5, follow_redirects=True) as client:
+                response = await client.post(
+                    f"{TORRENT_SEARCH_API_URL}/torrent/search",
+                    params={
+                        "query": normalized_query,
+                        "max_items": 300,
+                        "per_source": 50,
+                    },
+                    headers={"Accept": "application/json"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("Aggregate search fallback failed: %s", exc)
+            return []
 
-    hits = payload.get("hits") if isinstance(payload, dict) else []
-    if not isinstance(hits, list):
-        return []
+        if not isinstance(payload, list):
+            return []
 
-    target_text = _normalize_title(normalized_query)
+        results: list[dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+
+            title = str(item.get("filename") or item.get("title") or "").strip()
+            if not title:
+                continue
+
+            title_tokens = set(_search_tokens(title))
+            if target_tokens and not all(token in title_tokens for token in target_tokens):
+                continue
+            if season is not None and not _season_episode_match(title, season, episode):
+                continue
+
+            category = str(item.get("category") or "").strip().lower()
+            if category and any(
+                blocked in category
+                for blocked in ("anime", "games", "music", "software", "books", "porn", "xxx", "adult")
+            ):
+                continue
+            if category and not any(
+                allowed in category
+                for allowed in ("video", "movie", "tv", "television", "series")
+            ):
+                continue
+
+            magnet = str(item.get("magnet_link") or item.get("magnetUrl") or "").strip()
+            h = info_hash(magnet)
+            raw_hash = str(item.get("infoHash") or item.get("hash") or "").strip().lower()
+            if not h and re.fullmatch(r"[0-9a-f]{40}", raw_hash):
+                h = raw_hash
+
+            results.append({
+                "guid": str(item.get("guid") or item.get("id") or f"aggregate-{h or title}"),
+                "title": title,
+                "size": int(item.get("size") or 0) if isinstance(item.get("size"), (int, float)) else parse_size(str(item.get("size") or "")),
+                "seeders": int(item.get("seeders") or 0),
+                "leechers": int(item.get("leechers") or 0),
+                "indexer": str(item.get("indexer") or item.get("source") or "torrent-search").strip(),
+                "protocol": "torrent",
+                "publishDate": str(item.get("publishDate") or item.get("date") or ""),
+                "infoHash": h if re.fullmatch(r"[0-9a-f]{40}", h, re.I) else "",
+                "magnetUrl": magnet or None,
+                "downloadUrl": magnet or None,
+                "infoUrl": str(item.get("infoUrl") or item.get("page_url") or ""),
+                "sourceUrl": str(item.get("sourceUrl") or item.get("page_url") or ""),
+                "category": str(item.get("category") or ""),
+            })
+
+        return results
+
+    knaben_results, aggregate_results = await asyncio.gather(
+        search_knaben(query, limit=limit),
+        aggregate_fallback(),
+        return_exceptions=True,
+    )
+
+    if isinstance(knaben_results, BaseException):
+        knaben_results = []
+    if isinstance(aggregate_results, BaseException):
+        aggregate_results = []
+
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    for hit in hits:
-        if not isinstance(hit, dict):
+    # Preserve the known-good Knaben results first.
+    for item in knaben_results:
+        if not isinstance(item, dict):
             continue
-
-        title = str(hit.get("title") or "").strip()
-        category = str(hit.get("category") or "").strip()
-        if not title:
+        key = str(item.get("infoHash") or item.get("magnetUrl") or item.get("guid") or "").strip().lower()
+        if key and key in seen:
             continue
+        if key:
+            seen.add(key)
+        results.append(item)
+        if len(results) >= limit:
+            break
 
-        title_tokens = set(_search_tokens(title))
-        if target_tokens and not all(token in title_tokens for token in target_tokens):
-            continue
-
-        category_lower = category.lower()
-        if category_lower and any(
-            blocked in category_lower
-            for blocked in ("anime", "games", "music", "software", "books", "porn", "xxx", "adult")
-        ):
-            continue
-        if category_lower and not any(
-            allowed in category_lower
-            for allowed in ("video", "movie", "tv", "television", "series")
-        ):
-            continue
-        if season is not None and not _season_episode_match(title, season, episode):
-            continue
-
-        magnet = str(hit.get("magnetUrl") or "").strip()
-        hash_value = str(hit.get("hash") or "").strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{40}", hash_value):
-            hash_value = info_hash(magnet)
-
-        key = hash_value or magnet or str(hit.get("id") or title)
-        if key in seen:
-            continue
-        seen.add(key)
-
-        results.append({
-            "guid": f"knaben-{str(hit.get('id') or hash_value or title)}",
-            "title": title,
-            "size": int(hit.get("bytes") or 0),
-            "seeders": int(hit.get("seeders") or 0),
-            "leechers": int(hit.get("peers") or 0),
-            "indexer": str(hit.get("cachedOrigin") or hit.get("tracker") or "Knaben").strip(),
-            "protocol": "torrent",
-            "publishDate": str(hit.get("date") or ""),
-            "infoHash": hash_value if re.fullmatch(r"[0-9a-f]{40}", hash_value, re.I) else "",
-            "magnetUrl": magnet or None,
-            "downloadUrl": magnet or None,
-            "infoUrl": str(hit.get("details") or ""),
-            "sourceUrl": str(hit.get("details") or ""),
-            "category": category,
-        })
-
-    results.sort(
-        key=lambda item: (
-            1 if " ".join(_search_tokens(item["title"])) == target_text else 0,
-            int(item.get("seeders") or 0),
-        ),
-        reverse=True,
-    )
+    # Supplement missing results from the Render-hosted aggregate index.
+    if len(results) < limit:
+        for item in aggregate_results:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("infoHash") or item.get("magnetUrl") or item.get("guid") or "").strip().lower()
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            results.append(item)
+            if len(results) >= limit:
+                break
 
     results = results[:limit]
     _search_cache[cache_key] = (now, results)
@@ -1316,7 +1333,13 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
         oldest = min(_search_cache.items(), key=lambda pair: pair[1][0])[0]
         _search_cache.pop(oldest, None)
 
-    logger.info("Search '%s': %d results from broad Knaben path", query, len(results))
+    logger.info(
+        "Search '%s': %d results (Knaben=%d, aggregate=%d)",
+        query,
+        len(results),
+        len(knaben_results),
+        len(aggregate_results),
+    )
     return results
 
 def parse_size(value: str) -> int:
