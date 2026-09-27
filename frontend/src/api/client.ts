@@ -131,7 +131,7 @@ export const api = {
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch {}
     if (!res.ok) throw new Error(data?.error || body || 'Subtitle download failed');
-    return data;
+    return { ...data, url: data?.url?.startsWith('/') ? API_BASE + data.url : data.url };
   },
 
   async getTorrents(filter?: string): Promise<TorrentItem[]> {
