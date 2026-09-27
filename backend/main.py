@@ -163,7 +163,11 @@ async def _fetch_source_torrent_descriptor(source_url: str, info_hash_value: str
 
     # Search results currently expose Knaben detail URLs. Keep this narrowly
     # scoped rather than turning the endpoint into an arbitrary URL fetcher.
-    allowed_hosts = {"knaben.org", "www.knaben.org", "api.knaben.org"}
+    allowed_hosts = {
+        "knaben.org", "www.knaben.org", "api.knaben.org",
+        "knaben.eu", "www.knaben.eu",
+        "knaben.xyz", "www.knaben.xyz",
+    }
     if host not in allowed_hosts:
         return None
 
@@ -1490,6 +1494,7 @@ async def search_knaben(query: str, limit: int = 100) -> list[dict[str, Any]]:
             "downloadUrl": magnet or None,
             "infoUrl": str(hit.get("details") or ""),
             "sourceUrl": str(hit.get("details") or ""),
+            "descriptorUrl": str(hit.get("link") or ""),
             "category": category,
         })
 
@@ -2922,6 +2927,66 @@ def _libtorrent_metadata_sync(magnet: str) -> tuple[str, str, list[dict[str, Any
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+async def _lookup_knaben_by_hash(info_hash_value: str) -> str:
+    """Find a Knaben cached descriptor for an exact info-hash, if available."""
+    target = info_hash_value.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", target):
+        return ""
+
+    payload_base = {
+        "search_type": "100%",
+        "query": target,
+        "from": 0,
+        "size": 20,
+        "hide_unsafe": False,
+        "hide_xxx": False,
+    }
+
+    async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+        for field in ("hash", None):
+            payload = dict(payload_base)
+            if field:
+                payload["search_field"] = field
+            try:
+                response = await client.post(
+                    KNABEN_API_URL,
+                    json=payload,
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+            except (httpx.HTTPError, ValueError):
+                continue
+
+            hits = data.get("hits") if isinstance(data, dict) else None
+            if not isinstance(hits, list):
+                continue
+
+            for hit in hits:
+                if not isinstance(hit, dict):
+                    continue
+                hit_hash = str(hit.get("hash") or "").strip().lower()
+                if hit_hash != target:
+                    continue
+
+                descriptor = str(hit.get("link") or "").strip()
+                if descriptor:
+                    return descriptor
+
+                details = str(hit.get("details") or "").strip()
+                if details:
+                    found = await _fetch_source_torrent_descriptor(details, target)
+                    if found:
+                        # The helper returns metadata, not the URL. The caller
+                        # will use this path only when a descriptor was already
+                        # parsed, so this sentinel remains empty here.
+                        return ""
+    return ""
+
+
 @app.post("/api/v2/torrents/inspect-magnet")
 async def seedr_inspect_magnet(body: dict[str, Any]):
     """Return cached metadata immediately or start a background resolver."""
@@ -2941,9 +3006,25 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
 
     # Search results can carry a detail URL. When that page exposes a real
     # .torrent descriptor, use it before touching DHT/trackers.
+    descriptor_url = str(body.get("descriptorUrl") or "").strip()
     source_url = str(body.get("sourceUrl") or body.get("infoUrl") or "").strip()
-    if source_url:
-        descriptor_result = await _fetch_source_torrent_descriptor(source_url, h)
+
+    # First use an actual descriptor URL returned by the indexer.
+    for candidate_url in (descriptor_url, source_url):
+        if candidate_url:
+            descriptor_result = await _fetch_source_torrent_descriptor(candidate_url, h)
+            if descriptor_result:
+                return descriptor_result
+
+    # For a pasted magnet there is no source URL. Try an exact info-hash
+    # lookup in Knaben before falling back to swarm/DHT metadata discovery.
+    try:
+        hash_descriptor = await _lookup_knaben_by_hash(h)
+    except Exception as exc:
+        logger.info("Knaben hash lookup failed for %s: %s", h, exc)
+        hash_descriptor = ""
+    if hash_descriptor:
+        descriptor_result = await _fetch_source_torrent_descriptor(hash_descriptor, h)
         if descriptor_result:
             return descriptor_result
 
