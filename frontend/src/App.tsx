@@ -893,7 +893,18 @@ export default function App() {
   }, [activeTab, loadSeedrLibrary]);
 
 
-  // Polling loop for active torrents, speeds, and push notifications
+  const hasActiveQbtTransfers = useMemo(
+    () => torrents.some(t =>
+      t.state === 'downloading' ||
+      t.state === 'pausedDL' ||
+      t.state === 'queuedDL' ||
+      t.progress < 1
+    ),
+    [torrents]
+  );
+
+  // Poll qBittorrent compatibility data slowly when idle and faster only while
+  // there is an active transfer. Seedr has its own lighter task polling loop.
   useEffect(() => {
     let isMounted = true;
 
@@ -948,17 +959,12 @@ export default function App() {
     };
 
     pollTorrents();
-    const interval = setInterval(pollTorrents, torrents.some(t =>
-      t.state === 'downloading' ||
-      t.state === 'pausedDL' ||
-      t.state === 'queuedDL' ||
-      t.progress < 1
-    ) ? 5000 : 20000);
+    const interval = setInterval(pollTorrents, hasActiveQbtTransfers ? 5000 : 20000);
     return () => {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [currentFolder, torrents.length]);
+  }, [currentFolder, hasActiveQbtTransfers]);
 
   // Actions
   const appendActivityLog = useCallback((log: ActivityLog) => {
