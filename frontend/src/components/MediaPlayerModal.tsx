@@ -27,6 +27,7 @@ import { formatBytes, formatDuration } from '../utils/formatters.ts';
 interface MediaPlayerModalProps {
   file: StorageFile | null;
   onClose: () => void;
+  onPlaybackStarted?: () => void;
   isMinimized: boolean;
   onToggleMinimize: () => void;
 }
@@ -34,6 +35,7 @@ interface MediaPlayerModalProps {
 export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   file,
   onClose,
+  onPlaybackStarted,
   isMinimized,
   onToggleMinimize
 }) => {
@@ -118,13 +120,24 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       // Hls.js is attaching MediaSource. Clear any stale overlay once metadata
       // has successfully arrived.
       setMediaError('');
-      setTrackNotice('');
       if (restorePlaying) {
         media.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
       }
     };
 
     media.addEventListener('loadedmetadata', handleLoaded, { once: true });
+
+    const handlePlaying = () => {
+      // Stage 2 ends only when the browser is actually rendering playback.
+      // This prevents the spinner from disappearing merely because metadata
+      // or the first buffer arrived.
+      setTrackNotice('');
+      setMediaError('');
+      setIsPlaying(true);
+      onPlaybackStarted?.();
+    };
+
+    media.addEventListener('playing', handlePlaying);
 
     let hls: Hls | null = null;
     // Seedr's browser endpoint intentionally uses a clean same-origin
@@ -194,6 +207,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
     return () => {
       media.removeEventListener('loadedmetadata', handleLoaded);
+      media.removeEventListener('playing', handlePlaying);
       hls?.destroy();
       media.pause();
       media.removeAttribute('src');
@@ -266,6 +280,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     );
     setTrackNotice('');
     setIsPlaying(false);
+    onPlaybackStarted?.();
   };
 
   // Toggle play/pause
