@@ -2502,21 +2502,42 @@ async def seedr_auth_status():
     if not SEEDR_TOKEN:
         return {
             "configured": False,
+            "authenticated": False,
             "code": "SEEDR_TOKEN_MISSING",
             "message": "Seedr API token is not configured in Render.",
         }
 
+    # /user is a profile endpoint and can legitimately be unavailable when a
+    # token does not include the profile scope. It must not be used as the
+    # definitive test that an otherwise valid file-management token is bad.
     try:
-        payload = await seedr_request("/user")
-        data = seedr_data(payload)
+        tasks_payload = await seedr_request("/tasks")
+        tasks = arr(seedr_data(tasks_payload), ("tasks", "torrents", "items"))
+        profile_id = None
+        profile_plan = None
+        try:
+            profile_payload = seedr_data(await seedr_request("/user"))
+            if isinstance(profile_payload, dict):
+                profile_id = profile_payload.get("id")
+                profile_plan = profile_payload.get("plan")
+        except SeedrError as profile_exc:
+            if profile_exc.code == "SEEDR_TOKEN_REJECTED":
+                # The task endpoint already proved the token. Treat a profile
+                # scope denial as non-fatal authentication.
+                logger.info("Seedr /user profile lookup unavailable; task API authentication succeeded")
+            else:
+                logger.info("Seedr /user profile lookup failed: %s", profile_exc.code)
+
         return {
             "configured": True,
             "authenticated": True,
             "code": "SEEDR_AUTH_OK",
+            "taskAccess": True,
+            "taskCount": len(tasks),
             "user": {
-                "id": data.get("id") if isinstance(data, dict) else None,
+                "id": profile_id,
                 "email": None,
-                "plan": data.get("plan") if isinstance(data, dict) else None,
+                "plan": profile_plan,
             },
         }
     except SeedrError as exc:
