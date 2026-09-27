@@ -688,11 +688,13 @@ def normalize_file(item: Any, folder_id: str = "") -> dict[str, Any]:
         return {"id": "", "name": "Unnamed file", "size": 0, "folderId": folder_id}
     return {
         "id": str(item.get("id") or item.get("file_id") or ""),
+        # Seedr V2 presentation endpoints use the canonical file id.
+        # Keep legacy folder_file_id only as a fallback for older API shapes.
         "streamId": str(
-            item.get("folder_file_id")
-            or item.get("folderFileId")
+            item.get("id")
             or item.get("file_id")
-            or item.get("id")
+            or item.get("folder_file_id")
+            or item.get("folderFileId")
             or ""
         ),
         "name": str(item.get("name") or item.get("title") or "Unnamed file"),
@@ -2671,11 +2673,12 @@ async def resolve_seedr_stream_id(file_id: str, name: str = "") -> str:
         if raw_name.lower() != wanted_name:
             continue
 
+        # Match MediaFusion: Seedr V2 playback uses the actual file id.
         resolved = str(
-            raw.get("folder_file_id")
-            or raw.get("folderFileId")
+            raw.get("id")
             or raw.get("file_id")
-            or raw.get("id")
+            or raw.get("folder_file_id")
+            or raw.get("folderFileId")
             or ""
         ).strip()
         if not resolved:
