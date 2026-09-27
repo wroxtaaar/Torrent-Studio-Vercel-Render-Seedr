@@ -793,15 +793,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             </div>
           )}
 
-          {selectionReason && (
-            <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-3.5 text-xs text-amber-200">
-              <div className="font-bold text-amber-300">File selection required</div>
-              <p className="mt-1 leading-relaxed">
-                This torrent is <strong>{formatBytes(selectionReason.torrentSize)}</strong>, while Seedr has only <strong>{formatQuotaBytes(selectionReason.remainingSpace)}</strong> free.
-                You can select a subset that fits the remaining space. Torrent Studio will use the selective Seedr path only when the selected files fit; otherwise the safe fallback is qBittorrent.
-              </p>
-            </div>
-          )}
+
 
           {/* File details / selective file selection */}
           {inspectedFiles.length > 0 && (
