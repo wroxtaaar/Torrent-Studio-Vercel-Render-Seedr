@@ -1599,6 +1599,12 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
                 "downloadUrl": magnet or None,
                 "infoUrl": str(item.get("infoUrl") or item.get("page_url") or ""),
                 "sourceUrl": str(item.get("sourceUrl") or item.get("page_url") or ""),
+                "descriptorUrl": str(
+                    item.get("torrentUrl")
+                    or item.get("torrent_url")
+                    or item.get("descriptorUrl")
+                    or ""
+                ),
                 "category": str(item.get("category") or ""),
             })
 
