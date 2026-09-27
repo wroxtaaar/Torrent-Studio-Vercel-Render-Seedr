@@ -19,7 +19,16 @@ SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
 SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "").strip()
 SEEDR_MAX_SIZE_GB = float(os.getenv("SEEDR_MAX_SIZE_GB", "5"))
 SEEDR_MAX_SIZE_BYTES = int(SEEDR_MAX_SIZE_GB * 1024**3)
-INDEXER_BASE = os.getenv("INDEXER_BASE_URL", "https://www.1337xx.to").rstrip("/")
+INDEXER_BASE = os.getenv("INDEXER_BASE_URL", "https://www.1337x.to").rstrip("/")
+INDEXER_FALLBACKS = [
+    value.strip().rstrip("/")
+    for value in os.getenv(
+        "INDEXER_FALLBACK_URLS",
+        "https://1337x.st,https://x1337x.ws,https://x1337x.eu,https://x1337x.se,https://x1337x.cc",
+    ).split(",")
+    if value.strip()
+]
+INDEXER_BASES = list(dict.fromkeys([INDEXER_BASE, *INDEXER_FALLBACKS]))
 
 app = FastAPI(title=APP_NAME)
 app.add_middleware(
@@ -264,59 +273,106 @@ async def download_url(file_id: str) -> dict[str, str]:
     return {"url": url, "name": name}
 
 async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
-    url = f"{INDEXER_BASE}/search/{quote(query.strip())}/1/"
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html,application/xhtml+xml"}
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers=headers) as client:
-        response = await client.get(url)
-    if response.status_code >= 400:
-        raise HTTPException(502, f"1337x search failed (HTTP {response.status_code})")
-    soup = BeautifulSoup(response.text, "html.parser")
-    results: list[dict[str, Any]] = []
-    for row in soup.select("table.table-list tbody tr"):
-        cells = row.find_all("td")
-        name_link = row.select_one("td.coll-1.name a[href*='/torrent/']")
-        if not name_link:
-            continue
-        title = name_link.get_text(" ", strip=True)
-        href = name_link.get("href", "")
-        info_url = href if href.startswith("http") else INDEXER_BASE + href
-        values = [c.get_text(" ", strip=True) for c in cells]
-        size_text = values[4] if len(values) > 4 else ""
-        seeders = int(re.sub(r"\D", "", values[-2] or "0") or 0) if len(values) >= 2 else 0
-        leechers = int(re.sub(r"\D", "", values[-1] or "0") or 0) if len(values) >= 1 else 0
-        results.append({
-            "guid": info_url,
-            "title": title,
-            "size": parse_size(size_text),
-            "seeders": seeders,
-            "leechers": leechers,
-            "indexer": "1337x",
-            "protocol": "torrent",
-            "infoUrl": info_url,
-            "sourceUrl": info_url,
-        })
-        if len(results) >= limit:
-            break
-    # Resolve magnets concurrently for the visible results.
-    async def enrich(item: dict[str, Any]) -> dict[str, Any]:
+    """
+    Search configured 1337x-compatible domains in order.
+
+    1337x currently uses Cloudflare protection and may return 403 to
+    datacenter IPs. We do not bypass that protection; we try the official
+    alternate domains instead.
+    """
+    query = query.strip()
+    if not query:
+        return []
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/153.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    last_error = ""
+
+    for indexer_base in INDEXER_BASES:
+        url = f"{indexer_base}/search/{quote(query)}/1/"
         try:
-            async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers=headers) as client:
-                r = await client.get(item["infoUrl"])
-            if r.status_code < 400:
-                detail = BeautifulSoup(r.text, "html.parser")
-                magnet = detail.select_one("a[href^='magnet:']")
-                if magnet:
-                    item["magnetUrl"] = magnet.get("href")
-                    item["infoHash"] = info_hash(item["magnetUrl"])
-                text = detail.get_text(" ", strip=True)
-                if not item["size"]:
-                    m = re.search(r"Size:\s*([0-9.]+\s*[KMGT]B)", text, re.I)
-                    if m:
-                        item["size"] = parse_size(m.group(1))
-        except Exception:
-            pass
-        return item
-    return await asyncio.gather(*(enrich(x) for x in results))
+            async with httpx.AsyncClient(
+                timeout=20, follow_redirects=True, headers=headers
+            ) as client:
+                response = await client.get(url)
+        except httpx.HTTPError as exc:
+            last_error = f"{indexer_base}: {type(exc).__name__}"
+            continue
+
+        if response.status_code >= 400:
+            last_error = f"{indexer_base}: HTTP {response.status_code}"
+            continue
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        rows = soup.select("table.table-list tbody tr")
+        if not rows:
+            last_error = f"{indexer_base}: no search results table"
+            continue
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            cells = row.find_all("td")
+            name_link = row.select_one("td.coll-1.name a[href*='/torrent/']")
+            if not name_link:
+                continue
+            title = name_link.get_text(" ", strip=True)
+            href = name_link.get("href", "")
+            info_url = href if href.startswith("http") else urljoin(indexer_base + "/", href)
+            values = [cell.get_text(" ", strip=True) for cell in cells]
+            size_text = values[4] if len(values) > 4 else ""
+            seeders = int(re.sub(r"\D", "", values[-2] or "0") or 0) if len(values) >= 2 else 0
+            leechers = int(re.sub(r"\D", "", values[-1] or "0") or 0) if values else 0
+            results.append({
+                "guid": info_url,
+                "title": title,
+                "size": parse_size(size_text),
+                "seeders": seeders,
+                "leechers": leechers,
+                "indexer": "1337x",
+                "protocol": "torrent",
+                "infoUrl": info_url,
+                "sourceUrl": info_url,
+            })
+            if len(results) >= limit:
+                break
+
+        if not results:
+            last_error = f"{indexer_base}: no usable search rows"
+            continue
+
+        async def enrich(item: dict[str, Any]) -> dict[str, Any]:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=12, follow_redirects=True, headers=headers
+                ) as client:
+                    detail_response = await client.get(item["infoUrl"])
+                if detail_response.status_code < 400:
+                    detail = BeautifulSoup(detail_response.text, "html.parser")
+                    magnet = detail.select_one("a[href^='magnet:']")
+                    if magnet:
+                        item["magnetUrl"] = magnet.get("href")
+                        item["infoHash"] = info_hash(item["magnetUrl"])
+                    text = detail.get_text(" ", strip=True)
+                    if not item["size"]:
+                        match = re.search(r"Size:\s*([0-9.]+\s*[KMGT]B)", text, re.I)
+                        if match:
+                            item["size"] = parse_size(match.group(1))
+            except httpx.HTTPError:
+                pass
+            return item
+
+        return await asyncio.gather(*(enrich(item) for item in results))
+
+    raise HTTPException(
+        502,
+        "Torrent search is unavailable. Tried configured 1337x domains; "
+        f"last result: {last_error or 'unknown error'}",
+    )
 
 def parse_size(value: str) -> int:
     m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)", value or "", re.I)
@@ -332,7 +388,7 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "seedrConfigured": bool(SEEDR_TOKEN), "indexer": INDEXER_BASE}
+    return {"status": "ok", "seedrConfigured": bool(SEEDR_TOKEN), "indexer": INDEXER_BASE, "indexers": INDEXER_BASES}
 
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=20)):
