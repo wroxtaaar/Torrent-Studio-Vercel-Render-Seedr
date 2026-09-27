@@ -33,7 +33,7 @@ interface AddMagnetModalProps {
     magnet: string,
     category: string,
     selectedFiles?: number[],
-    manifest?: { name: string; size: number; priority: number }[],
+    manifest?: { index?: number; name: string; size: number; priority: number }[],
     existingHash?: string,
     forceBackend?: 'seedr' | 'qbittorrent',
     selectedNames?: string[],
@@ -92,6 +92,11 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     taskId: number | string;
     created: boolean;
     unwanted: unknown;
+    writeAccepted: boolean;
+    writeError?: string | null;
+    acceptedBitOrder?: string | null;
+    selectedSize?: number;
+    totalSize?: number;
   } | null>(null);
 
   const inspectTimeoutRef = useRef<any>(null);
@@ -181,6 +186,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     const fileSize = Number(file.size || 0);
 
     const manifest = [{
+      index: Number(file.index),
       name: file.name,
       size: fileSize,
       priority: 1
@@ -565,7 +571,12 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       setSeedrSelectionTestResult({
         taskId: result.taskId,
         created: Boolean(result.created),
-        unwanted: result.unwanted
+        unwanted: result.unwanted,
+        writeAccepted: Boolean(result.writeAccepted),
+        writeError: result.writeError || null,
+        acceptedBitOrder: result.acceptedBitOrder || null,
+        selectedSize: Number(result.selectedSize || totalSelectedSize),
+        totalSize: Number(result.totalSize || totalTorrentSize)
       });
 
       setInspectionSource(
@@ -636,6 +647,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
 
     const selectedFileIndexes = inspectedFiles.filter(f => f.selected).map(f => f.index);
     const manifest = inspectedFiles.map(f => ({
+      index: f.index,
       name: f.name,
       size: f.size,
       priority: f.selected ? 1 : 0
@@ -1024,7 +1036,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                       Experimental Seedr selection test
                     </div>
                     <p className="text-[10px] text-slate-500 mt-0.5">
-                      Experimental write test. It creates/reuses a Seedr task and applies the selected-file bitmap.
+                      Writes the selected-file bitmap to Seedr and verifies that Seedr preserved it. This starts a test task.
                     </p>
                   </div>
                   <button
@@ -1042,14 +1054,19 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                 {seedrSelectionTestResult && (
                   <div className="mt-2 rounded-lg bg-slate-950 border border-slate-800 p-2.5 text-[10px] text-slate-400">
                     <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      <span>Selection write: <strong className={seedrSelectionTestResult.unwanted ? "text-emerald-400" : "text-amber-400"}>{seedrSelectionTestResult.unwanted ? 'completed' : 'unknown'}</strong></span>
+                      <span>Selection write: <strong className={seedrSelectionTestResult.writeAccepted ? "text-emerald-400" : "text-rose-400"}>{seedrSelectionTestResult.writeAccepted ? 'accepted' : 'failed'}</strong></span>
                       <span>Task: <strong className="text-slate-200 font-mono">{seedrSelectionTestResult.taskId}</strong></span>
                       <span>{seedrSelectionTestResult.created ? 'Test task created' : 'Existing task reused'}</span>
+                      {seedrSelectionTestResult.acceptedBitOrder && (
+                        <span>Bitmap: <strong className="text-slate-200">{seedrSelectionTestResult.acceptedBitOrder.toUpperCase()} verified</strong></span>
+                      )}
                     </div>
                     <div className="mt-1 break-all font-mono text-slate-500">
-                      unwanted: {typeof seedrSelectionTestResult.unwanted === 'string'
-                        ? seedrSelectionTestResult.unwanted || '(empty)'
-                        : JSON.stringify(seedrSelectionTestResult.unwanted)}
+                      {seedrSelectionTestResult.writeAccepted
+                        ? <>Selected {formatBytes(seedrSelectionTestResult.selectedSize || 0)} of {formatBytes(seedrSelectionTestResult.totalSize || 0)}. Verified unwanted bitmap: {typeof seedrSelectionTestResult.unwanted === 'string'
+                            ? seedrSelectionTestResult.unwanted || '(empty)'
+                            : JSON.stringify(seedrSelectionTestResult.unwanted)}</>
+                        : <>Selection write failed: {seedrSelectionTestResult.writeError || 'Seedr did not confirm the requested file selection.'}</>}
                     </div>
                   </div>
                 )}
