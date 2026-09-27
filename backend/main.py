@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import logging
 import os
 import re
 from pathlib import Path
@@ -14,6 +15,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
+logger = logging.getLogger("torrent-studio")
 SEEDR_BASE = "https://www.seedr.cc/api/v0.1/p"
 SEEDR_MEDIA_BASE = "https://www.seedr.cc/api"
 SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
@@ -21,6 +23,10 @@ SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "").strip()
 SEEDR_MAX_SIZE_GB = float(os.getenv("SEEDR_MAX_SIZE_GB", "5"))
 SEEDR_MAX_SIZE_BYTES = int(SEEDR_MAX_SIZE_GB * 1024**3)
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
+KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
+SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "4"))
+SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
+_search_cache: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
 app = FastAPI(title=APP_NAME)
 app.add_middleware(
     CORSMiddleware,
@@ -727,29 +733,141 @@ async def search_tv_eztv(query: str, limit: int = 30) -> list[dict[str, Any]]:
     return results[:limit]
 
 
-async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
-    """
-    Fast media search.
+async def search_knaben(query: str, limit: int = 100) -> list[dict[str, Any]]:
+    """Search Knaben's cached torrent database for fast multi-indexer coverage."""
+    title_query, season, episode = _media_search_parts(query)
+    if not title_query:
+        return []
 
-    Direct sources are started immediately and are never blocked by the
-    broad aggregate search service. The aggregate service is supplemental
-    and has a short timeout so one slow indexer cannot make the whole search
-    feel slow.
-    """
+    target_tokens = _search_tokens(title_query)
+    categories = [2000000] if season is not None else [2000000, 3000000]
+    request_size = min(max(limit, 50), 150)
+
+    async def search_category(category_id: int) -> list[dict[str, Any]]:
+        body = {
+            "search_type": "100%",
+            "search_field": "title",
+            "query": title_query,
+            "order_by": "seeders",
+            "order_direction": "desc",
+            "categories": [category_id],
+            "from": 0,
+            "size": request_size,
+            "hide_unsafe": True,
+            "hide_xxx": True,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    KNABEN_API_URL,
+                    json=body,
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("Knaben search failed for category %s: %s", category_id, exc)
+            return []
+
+        hits = payload.get("hits") if isinstance(payload, dict) else None
+        if not isinstance(hits, list):
+            return []
+
+        results: list[dict[str, Any]] = []
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+
+            title = str(hit.get("title") or "").strip()
+            if not title:
+                continue
+
+            normalized_title = _normalize_title(title)
+            if target_tokens and not all(token in normalized_title for token in target_tokens):
+                continue
+            if season is not None and not _season_episode_match(title, season, episode):
+                continue
+
+            magnet = str(hit.get("magnetUrl") or "").strip()
+            h = str(hit.get("hash") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", h):
+                h = info_hash(magnet)
+
+            results.append({
+                "guid": f"knaben-{h or hit.get('id') or title}",
+                "title": title,
+                "size": int(hit.get("bytes") or 0),
+                "seeders": int(hit.get("seeders") or 0),
+                "leechers": int(hit.get("peers") or 0),
+                "indexer": str(hit.get("cachedOrigin") or "Knaben").strip(),
+                "protocol": "torrent",
+                "publishDate": str(hit.get("date") or ""),
+                "magnetUrl": magnet or None,
+                "infoHash": h,
+                "downloadUrl": magnet or None,
+                "infoUrl": str(hit.get("details") or ""),
+                "sourceUrl": str(hit.get("details") or ""),
+                "category": str(hit.get("category") or ""),
+            })
+
+        return results
+
+    batches = await asyncio.gather(
+        *(search_category(category) for category in categories),
+        return_exceptions=True,
+    )
+
+    results: list[dict[str, Any]] = []
+    for batch in batches:
+        if isinstance(batch, list):
+            results.extend(batch)
+
+    # Prefer exact-title starts, then seed count.
+    target_text = _normalize_title(title_query)
+    results.sort(
+        key=lambda row: (
+            1 if _normalize_title(str(row["title"])).startswith(target_text) else 0,
+            int(row.get("seeders") or 0),
+        ),
+        reverse=True,
+    )
+    logger.info("Knaben search '%s': %d relevant results", query, len(results))
+    return results[:limit]
+
+
+async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Fast media search across direct sources plus cached multi-indexer coverage."""
     query = query.strip()
     if not query:
         return []
 
+    cache_key = (re.sub(r"\s+", " ", query).lower(), limit)
+    now = asyncio.get_running_loop().time()
+    cached = _search_cache.get(cache_key)
+    if cached and now - cached[0] < SEARCH_CACHE_SECONDS:
+        return cached[1]
+
     normalized_query, season, episode = _media_search_parts(query)
-    aggregate_query = normalized_query or query
+
+    async def bounded(coro: Any) -> list[dict[str, Any]]:
+        try:
+            value = await asyncio.wait_for(coro, timeout=SEARCH_SOURCE_TIMEOUT_SECONDS)
+            return value if isinstance(value, list) else []
+        except (asyncio.TimeoutError, httpx.HTTPError, ValueError):
+            return []
+        except Exception as exc:
+            logger.info("Search source failed: %s", exc)
+            return []
 
     async def aggregate_search() -> list[dict[str, Any]]:
-        base = TORRENT_SEARCH_API_URL
-        search_url = f"{base}/torrent/search"
+        aggregate_query = normalized_query or query
         try:
-            async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
                 response = await client.post(
-                    search_url,
+                    f"{TORRENT_SEARCH_API_URL}/torrent/search",
                     params={
                         "query": aggregate_query,
                         "max_items": 100,
@@ -757,37 +875,31 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
                     },
                     headers={"Accept": "application/json"},
                 )
-                if response.status_code >= 400:
-                    return []
+                response.raise_for_status()
                 payload = response.json()
                 return payload if isinstance(payload, list) else []
         except (httpx.HTTPError, ValueError):
             return []
 
-    # All sources start together. In particular, direct 1337x is no longer
-    # waiting behind the potentially slow aggregate service.
-    tv_results, movie_results, x1337_results, aggregate_payload = await asyncio.gather(
-        search_tv_eztv(query, limit=100),
-        search_yts_movies(normalized_query, limit=100),
-        search_1337x_direct(query, limit=min(max(limit * 2, 20), 50)),
-        aggregate_search(),
-        return_exceptions=True,
-    )
+    # Knaben is the main fast multi-source layer. Direct 1337x remains useful
+    # when Render can reach the site, while YTS/EZTV supply structured media data.
+    knaben_task = bounded(search_knaben(query, limit=max(limit * 2, 50)))
+    x1337_task = bounded(search_1337x_direct(query, limit=min(max(limit, 20), 30)))
+    tv_task = bounded(search_tv_eztv(query, limit=50))
+    movie_task = bounded(search_yts_movies(normalized_query, limit=50))
+    aggregate_task = bounded(aggregate_search())
 
-    if isinstance(tv_results, BaseException):
-        tv_results = []
-    if isinstance(movie_results, BaseException):
-        movie_results = []
-    if isinstance(x1337_results, BaseException):
-        x1337_results = []
-    if isinstance(aggregate_payload, BaseException):
-        aggregate_payload = []
+    knaben_results, x1337_results, tv_results, movie_results, aggregate_payload = await asyncio.gather(
+        knaben_task,
+        x1337_task,
+        tv_task,
+        movie_task,
+        aggregate_task,
+    )
 
     tokens = _search_tokens(normalized_query)
 
     # Keep aggregate candidates strictly media-focused and title-relevant.
-    # This prevents anime, games, music and unrelated high-seed torrents from
-    # appearing just because they share one generic search token.
     aggregate_items: list[dict[str, Any]] = []
     for item in aggregate_payload:
         if not isinstance(item, dict):
@@ -810,10 +922,9 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
             continue
         aggregate_items.append(item)
 
-    # Prefer direct media sources. The aggregate service supplements them
-    # rather than determining whether the search succeeds.
     payload_items = (
-        list(x1337_results)
+        list(knaben_results)
+        + list(x1337_results)
         + list(tv_results)
         + list(movie_results)
         + aggregate_items
@@ -821,7 +932,7 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
 
     results: list[dict[str, Any]] = []
     seen_hashes: set[str] = set()
-    max_candidates = max(limit * 6, 60)
+    max_candidates = max(limit * 8, 100)
 
     for item in payload_items[:max_candidates]:
         if not isinstance(item, dict):
@@ -831,18 +942,15 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
         if not filename:
             continue
 
-        magnet = str(
-            item.get("magnet_link") or item.get("magnetUrl") or ""
-        ).strip()
-        item_hash = info_hash(magnet) or str(item.get("id") or "").strip()
+        magnet = str(item.get("magnet_link") or item.get("magnetUrl") or "").strip()
+        item_hash = info_hash(magnet) or str(
+            item.get("infoHash") or item.get("hash") or item.get("id") or ""
+        ).strip().lower()
+
         if item_hash and item_hash in seen_hashes:
             continue
         if item_hash:
             seen_hashes.add(item_hash)
-
-        source = str(
-            item.get("indexer") or item.get("source") or "torrent-search"
-        ).strip()
 
         size_value = item.get("size", 0)
         size = (
@@ -850,6 +958,10 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
             if isinstance(size_value, (int, float))
             else parse_size(str(size_value))
         )
+
+        source = str(
+            item.get("indexer") or item.get("source") or "torrent-search"
+        ).strip()
 
         results.append({
             "guid": str(item.get("guid") or item.get("id") or ""),
@@ -873,6 +985,22 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
         if len(results) >= limit:
             break
 
+    _search_cache[cache_key] = (now, results)
+    # Keep the in-memory cache bounded.
+    if len(_search_cache) > 100:
+        oldest = min(_search_cache.items(), key=lambda pair: pair[1][0])[0]
+        _search_cache.pop(oldest, None)
+
+    logger.info(
+        "Search '%s': %d results (Knaben=%d, 1337x=%d, EZTV=%d, YTS=%d, aggregate=%d)",
+        query,
+        len(results),
+        len(knaben_results),
+        len(x1337_results),
+        len(tv_results),
+        len(movie_results),
+        len(aggregate_items),
+    )
     return results
 
 def parse_size(value: str) -> int:
