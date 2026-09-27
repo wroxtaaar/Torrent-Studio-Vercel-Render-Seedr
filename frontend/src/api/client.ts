@@ -218,7 +218,12 @@ export const api = {
     const res = await apiFetch(API_BASE + '/api/seedr/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ magnet, size, folder_id: undefined })
+      body: JSON.stringify({
+        magnet,
+        size,
+        folder_id: undefined,
+        torrent_name: torrentName || undefined
+      })
     });
     const body = await res.text();
     let data: any = null;
@@ -284,6 +289,7 @@ export const api = {
       id: string;
       folderId: string;
       name: string;
+      torrentName?: string;
       path: string;
       filesCount: number;
       totalSize: number;
