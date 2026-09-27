@@ -2619,53 +2619,61 @@ async def _presentation_is_hls(url: str) -> bool:
 
 
 async def _fetch_seedr_hls_manifest(file_id: str) -> tuple[str, str]:
-    # Seedr V2 exposes the playback URL used by current clients. Prefer that
-    # presentation endpoint before falling back to the older /media/hls route.
-    upstream_url = await seedr_v2_video_url(file_id)
-    if not upstream_url:
-        upstream_url = _seedr_media_url(file_id, "video")
+    """Resolve a browser-playable HLS manifest from Seedr V2, then v1 fallback."""
+    candidates: list[str] = []
+    presentation_url = await seedr_v2_video_url(file_id)
+    if presentation_url:
+        candidates.append(presentation_url)
+    # Seedr's legacy HLS endpoint explicitly requests a converted browser stream.
+    candidates.append(_seedr_media_url(file_id, "video"))
 
-    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
-        response = await client.get(
-            upstream_url,
-            headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,*/*"},
-        )
-    if response.status_code >= 400:
-        detail = response.text[:500] or f"Seedr media endpoint returned HTTP {response.status_code}"
-        raise HTTPException(response.status_code, detail)
+    last_detail = "Seedr did not return an HLS manifest"
+    for upstream_url in dict.fromkeys(candidates):
+        try:
+            async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+                response = await client.get(
+                    upstream_url,
+                    headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,*/*"},
+                )
+            if response.status_code >= 400:
+                last_detail = response.text[:500] or f"Seedr returned HTTP {response.status_code}"
+                continue
 
-    content_type = str(response.headers.get("content-type") or "").lower()
-    text = response.text
-    if "#EXTM3U" not in text[:200]:
-        raise HTTPException(
-            502,
-            "Seedr did not return an HLS manifest for this file. The file may still be converting."
-        )
+            content_type = str(response.headers.get("content-type") or "").lower()
+            text = response.text
+            if "#EXTM3U" not in text[:200]:
+                last_detail = f"Seedr returned {content_type or 'non-HLS content'}"
+                continue
 
-    final_url = str(response.url)
-    host = urlsplit(final_url).hostname or ""
-    if not host:
-        raise HTTPException(502, "Seedr returned an invalid HLS URL")
+            final_url = str(response.url)
+            host = urlsplit(final_url).hostname or ""
+            if not host:
+                last_detail = "Seedr returned an invalid HLS URL"
+                continue
 
-    allowed_hosts = {host.lower()}
-    # Capture hosts already referenced by the master/media playlist.
-    for raw_uri in re.findall(r'(?:URI="([^"]+)"|^([^#\s][^\r\n]*))', text, flags=re.M):
-        uri = raw_uri[0] or raw_uri[1]
-        if uri:
-            try:
-                ref_host = urlsplit(_absolute_hls_uri(final_url, uri)).hostname
-                if ref_host:
-                    allowed_hosts.add(ref_host.lower())
-            except Exception:
-                pass
+            allowed_hosts = {host.lower()}
+            for raw_uri in re.findall(r'(?:URI="([^"]+)"|^([^#\s][^\r\n]*))', text, flags=re.M):
+                uri = raw_uri[0] or raw_uri[1]
+                if uri:
+                    try:
+                        ref_host = urlsplit(_absolute_hls_uri(final_url, uri)).hostname
+                        if ref_host:
+                            allowed_hosts.add(ref_host.lower())
+                    except Exception:
+                        pass
 
-    _seedr_hls_sources[file_id] = (
-        asyncio.get_running_loop().time() + SEEDR_HLS_CACHE_SECONDS,
-        final_url,
-        allowed_hosts,
-    )
-    return text, final_url
+            _seedr_hls_sources[file_id] = (
+                asyncio.get_running_loop().time() + SEEDR_HLS_CACHE_SECONDS,
+                final_url,
+                allowed_hosts,
+            )
+            logger.info("Seedr HLS manifest resolved: file=%s source=%s", file_id, urlsplit(final_url).hostname)
+            return text, final_url
+        except Exception as exc:
+            last_detail = str(exc)
+            continue
 
+    raise HTTPException(502, last_detail)
 
 async def _get_hls_source(file_id: str) -> tuple[str, set[str]]:
     now = asyncio.get_running_loop().time()
@@ -2744,23 +2752,31 @@ async def seedr_file_stream(
     resolved_id = await resolve_seedr_stream_id(file_id, name)
 
     if type == "video":
-        presentation_url = await seedr_v2_video_url(resolved_id)
-        if presentation_url and not await _presentation_is_hls(presentation_url):
-            # Seedr can return a browser-compatible direct presentation stream
-            # (MP4) instead of an HLS playlist. Proxy that stream so Chrome can
-            # use Range requests without exposing the Seedr token.
-            browser_url = "/api/seedr/media/video/" + quote(resolved_id, safe="")
-            protocol = "direct"
-        else:
+        # Prefer an HLS presentation for browsers. This explicitly supports
+        # Seedr conversion for MKV/other containers instead of handing Chrome
+        # the original container, which commonly produces media error 4.
+        try:
+            await _fetch_seedr_hls_manifest(resolved_id)
             browser_url = "/api/seedr/hls/" + quote(resolved_id, safe="")
-            protocol = "hls"
-        return {
-            "url": browser_url,
-            "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
-            "name": name or resolved_id,
-            "resolvedFileId": resolved_id,
-            "protocol": protocol,
-        }
+            presentation_url = await seedr_v2_video_url(resolved_id)
+            return {
+                "url": browser_url,
+                "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
+                "name": name or resolved_id,
+                "resolvedFileId": resolved_id,
+                "protocol": "hls",
+            }
+        except HTTPException:
+            presentation_url = await seedr_v2_video_url(resolved_id)
+            if presentation_url:
+                return {
+                    "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
+                    "externalUrl": presentation_url,
+                    "name": name or resolved_id,
+                    "resolvedFileId": resolved_id,
+                    "protocol": "direct",
+                }
+            raise
 
     return {
         "url": "/api/seedr/media/audio/" + quote(resolved_id, safe=""),
@@ -2769,7 +2785,6 @@ async def seedr_file_stream(
         "resolvedFileId": resolved_id,
         "protocol": "mp3",
     }
-
 
 @app.get("/api/seedr/hls/{file_id}")
 async def seedr_hls_manifest(file_id: str):
