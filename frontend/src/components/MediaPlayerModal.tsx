@@ -89,10 +89,10 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     // Seedr supplies the exact HLS URL that external players use (e.g. MX
     // Player). Try that URL first in Hls.js; if browser CORS blocks it, fall
     // back automatically to our Render same-origin proxy.
-    // Use the Seedr V2 presentation URL first. MediaFusion follows the same
-    // model, and it avoids rewriting a valid Seedr HLS playlist unnecessarily.
-    // Fall back to our same-origin proxy when the direct URL is blocked by CORS.
-    const preferredSeedrUrl = file.externalStreamUrl || file.streamUrl || directBaseUrl;
+    // Browser playback must use the backend URL. The backend decides whether the
+    // Seedr presentation is HLS or a direct video stream and provides the proper
+    // same-origin endpoint. Keep externalStreamUrl only for VLC/MX Player.
+    const preferredSeedrUrl = file.streamUrl || file.externalStreamUrl || directBaseUrl;
     const streamUrl = selectedAudioIndex !== undefined
       ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
       : preferredSeedrUrl;
@@ -395,7 +395,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         {isVideo ? (
           <video
             ref={videoRef}
-            src={file.externalStreamUrl || file.streamUrl}
+            src={file.streamUrl || file.externalStreamUrl}
             className="w-full h-32 object-contain bg-black rounded-lg"
             onTimeUpdate={onTimeUpdate}
             onLoadedMetadata={onLoadedMetadata}
