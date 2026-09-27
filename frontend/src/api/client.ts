@@ -12,6 +12,7 @@ export interface TorrentSearchResult {
   downloadUrl?: string;
   infoUrl?: string;
   sourceUrl?: string;
+  descriptorUrl?: string;
 }
 
 import {
@@ -165,7 +166,10 @@ export const api = {
 
     // Keep the UI responsive while the backend resolver stays alive and
     // benefits from its warm libtorrent session/cache.
-    for (let attempt = 0; attempt < 60; attempt++) {
+    // Do not keep the modal blocked for a full minute. Return a pending
+    // result after a short foreground wait so the UI can move the resolver
+    // into My Cloud Files and the user can continue working.
+    for (let attempt = 0; attempt < 12; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       const res = await apiFetch(
@@ -189,7 +193,15 @@ export const api = {
       }
     }
 
-    throw new Error('Torrent metadata is still resolving. Please retry in a moment.');
+    return {
+      name: '',
+      hash: jobId,
+      files: [],
+      totalSize: 0,
+      source: 'libtorrent_metadata',
+      pending: true,
+      message: 'Torrent metadata is still resolving in the background. Seedr has not been started.'
+    };
   },
 
   async uploadTorrentFile(file: File): Promise<{
