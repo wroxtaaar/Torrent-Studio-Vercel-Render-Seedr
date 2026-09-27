@@ -1630,6 +1630,16 @@ export default function App() {
 
       setSeedrError(null);
       const result = await api.getSeedrFileStream(file.streamId || file.id, file.name, type);
+      const apiOrigin = (() => {
+        try {
+          return new URL(result.url, window.location.origin).origin;
+        } catch {
+          return window.location.origin;
+        }
+      })();
+      const subtitleTracks = type === 'video'
+        ? findSeedrSubtitleTracks(file, apiOrigin)
+        : [];
       const syntheticFile: StorageFile = {
         id: `seedr-${file.id}`,
         name: result.name || file.name,
@@ -1644,6 +1654,7 @@ export default function App() {
         isStreamable: true,
         streamUrl: result.url,
         externalStreamUrl: result.externalUrl,
+        subtitleTracks,
         downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
       };
 
