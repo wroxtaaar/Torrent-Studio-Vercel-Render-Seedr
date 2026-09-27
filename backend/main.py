@@ -1598,16 +1598,26 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
 
         return results
 
-    knaben_results, aggregate_results = await asyncio.gather(
-        search_knaben(query, limit=limit),
-        aggregate_fallback(),
-        return_exceptions=True,
-    )
-
-    if isinstance(knaben_results, BaseException):
+    # Knaben is the primary provider. Do not make every search wait for the
+    # secondary Render-hosted aggregator; it has a separate network path and
+    # can occasionally be slow or unavailable. Only use it when the primary
+    # result set is too small.
+    try:
+        knaben_results = await search_knaben(query, limit=limit)
+    except Exception as exc:
+        logger.warning("Primary Knaben search failed for '%s': %s", query, exc)
         knaben_results = []
-    if isinstance(aggregate_results, BaseException):
-        aggregate_results = []
+
+    aggregate_results: list[dict[str, Any]] = []
+    if len(knaben_results) < limit:
+        try:
+            aggregate_results = await asyncio.wait_for(
+                aggregate_fallback(),
+                timeout=5.5,
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.info("Secondary aggregate search skipped/failed for '%s': %s", query, exc)
+            aggregate_results = []
 
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
