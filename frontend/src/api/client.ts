@@ -184,6 +184,28 @@ export const api = {
     return res.json();
   },
 
+  async inspectSeedrSelection(magnet: string, torrentName?: string): Promise<{
+    taskId: number | string;
+    created: boolean;
+    torrentName: string;
+    folderId: string | null;
+    unwanted: unknown;
+    writeTested: false;
+  }> {
+    const res = await apiFetch('/api/seedr/tasks/inspect-selection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ magnet, torrent_name: torrentName || undefined })
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.error || body || 'Seedr selective-download probe failed');
+    }
+    return data;
+  },
+
   async prepareSeedrMagnet(magnet: string): Promise<{
     taskId: number | string;
     name: string;
