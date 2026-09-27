@@ -345,9 +345,10 @@ export const api = {
     return data;
   },
 
-  async getSeedrFileStream(fileName: string, type: 'video' | 'audio'): Promise<{ url: string; name: string }> {
+  async getSeedrFileStream(fileId: string, fileName: string, type: 'video' | 'audio'): Promise<{ url: string; name: string }> {
     const params = new URLSearchParams({
       type,
+      file_id: fileId,
       name: fileName
     });
     const res = await apiFetch('/api/seedr/files/stream?' + params.toString());
