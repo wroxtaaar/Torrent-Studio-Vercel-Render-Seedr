@@ -44,6 +44,19 @@ const API_BASE = (
     ? window.location.origin
     : 'https://torrent-studio-vercel-render-seedr-26fd.onrender.com')
 ).replace(/\/+$/, '');
+const makeSeedrError = (data: any, body: string, status: number, fallback: string) => {
+  const error = new Error(
+    data?.error ||
+    data?.message ||
+    data?.detail ||
+    body ||
+    fallback
+  ) as Error & { code?: string; status?: number };
+  error.code = typeof data?.code === 'string' ? data.code : undefined;
+  error.status = status;
+  return error;
+};
+
 const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const value = String(input);
   return fetch(value.startsWith('/') ? API_BASE + value : value, init);
@@ -499,7 +512,7 @@ export const api = {
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw new Error(data?.error || body || 'Failed to fetch Seedr quota');
+    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to fetch Seedr quota');
     return {
       configured: Boolean(data?.configured),
       maxSpace: Number(data?.maxSpace || 0),
@@ -534,7 +547,7 @@ export const api = {
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw new Error(data?.error || body || 'Failed to fetch Seedr library metadata');
+    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to fetch Seedr library metadata');
     return {
       configured: Boolean(data?.configured),
       root: data?.root || null,
@@ -552,7 +565,7 @@ export const api = {
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw new Error(data?.error || body || 'Failed to load Seedr folder contents');
+    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to load Seedr folder contents');
     return {
       configured: Boolean(data?.configured),
       folderId: String(data?.folderId || folderId),
@@ -569,7 +582,7 @@ export const api = {
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch { data = null; }
-    if (!res.ok) throw new Error(data?.error || body || 'Failed to fetch Seedr files');
+    if (!res.ok) throw makeSeedrError(data, body, res.status, 'Failed to fetch Seedr files');
     return {
       configured: Boolean(data?.configured),
       files: Array.isArray(data?.files) ? data.files : [],
