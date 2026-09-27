@@ -123,7 +123,8 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     // endpoint as HLS explicitly.
     const isHlsStream =
       /\.m3u8(?:$|\?)/i.test(streamUrl) ||
-      streamUrl.includes('/api/seedr/hls/');
+      streamUrl.includes('/api/seedr/hls/') ||
+      streamUrl.includes('/api/media/hls/');
 
     if (isHlsStream && isVideo && Hls.isSupported()) {
       let triedFallback = false;
@@ -181,7 +182,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       media.removeAttribute('src');
       media.load();
     };
-  }, [file?.id, file?.streamUrl, isVideo, selectedAudioIndex]);
+  }, [file?.id, file?.streamUrl, file?.externalStreamUrl, isVideo, selectedAudioIndex]);
 
   useEffect(() => {
     if (!file || !isVideo) return;
