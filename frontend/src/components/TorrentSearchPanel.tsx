@@ -30,7 +30,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
   const [isSearching, setIsSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState('');
-  const [sortBy, setSortBy] = useState<'time' | 'size' | 'seeds'>('time');
+  const [sortBy, setSortBy] = useState<'time' | 'size' | 'seeds'>('seeds');
   const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
   const [minSeeders, setMinSeeders] = useState(0);
   const [showRecentSearches, setShowRecentSearches] = useState(false);
@@ -328,7 +328,13 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
                 <SlidersHorizontal className="w-3.5 h-3.5 text-slate-500" />
                 <select
                   value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value as 'time' | 'size' | 'seeds')}
+                  onChange={(e) => {
+                    const nextSortBy = e.target.value as 'time' | 'size' | 'seeds';
+                    setSortBy(nextSortBy);
+                    // Time and seed counts default to descending; file size
+                    // defaults to ascending so the smallest result appears first.
+                    setSortDirection(nextSortBy === 'size' ? 'asc' : 'desc');
+                  }}
                   className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 focus:outline-none focus:border-cyan-500"
                   title="Sort search results"
                 >
