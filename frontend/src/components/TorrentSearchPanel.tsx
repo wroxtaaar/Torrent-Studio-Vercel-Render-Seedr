@@ -366,7 +366,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
 
                     <button
                       type="button"
-                      disabled={!result.sourceUrl}
+                      disabled={!result.magnetUrl && !result.downloadUrl && !result.sourceUrl}
                       onClick={() => {
                         const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
                         if (source) onAdd(source, Number(result.size) || 0, result.title, result.infoHash);
