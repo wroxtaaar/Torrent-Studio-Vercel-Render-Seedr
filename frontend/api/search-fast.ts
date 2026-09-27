@@ -145,6 +145,8 @@ export async function GET(req: Request): Promise<Response> {
         const magnet = String(hit?.magnetUrl || '').trim();
         const hash = String(hit?.hash || '').trim().toLowerCase();
 
+        const category = String(hit?.category || '').trim();
+
         return {
           guid: `knaben-${String(hit?.id || hash || hit?.title || '')}`,
           title: String(hit?.title || ''),
