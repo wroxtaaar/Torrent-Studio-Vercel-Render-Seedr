@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from collections import deque
 import json
 import logging
 import os
@@ -37,6 +38,38 @@ SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
 TORRENT_METADATA_CACHE_FILE = Path(os.getenv("TORRENT_METADATA_CACHE_FILE", "/app/.torrent_metadata_cache.json"))
 TORRENT_METADATA_JOB_TIMEOUT_SECONDS = float(os.getenv("TORRENT_METADATA_JOB_TIMEOUT_SECONDS", "60"))
 _search_cache: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
+
+# Rolling server-side byte counters for browser media streams. This is more
+# reliable than Resource Timing for long-lived media responses, which browsers
+# may report with transferSize=0 until the response completes.
+_media_download_stats: dict[str, deque[tuple[float, int]]] = {}
+_media_stats_lock = asyncio.Lock()
+_MEDIA_STATS_WINDOW_SECONDS = 5.0
+
+def _record_media_bytes(file_id: str, amount: int) -> None:
+    if amount <= 0:
+        return
+    now = time.monotonic()
+    bucket = _media_download_stats.setdefault(file_id, deque())
+    bucket.append((now, amount))
+    cutoff = now - _MEDIA_STATS_WINDOW_SECONDS
+    while bucket and bucket[0][0] < cutoff:
+        bucket.popleft()
+
+def _media_download_speed(file_id: str) -> float:
+    now = time.monotonic()
+    bucket = _media_download_stats.get(file_id)
+    if not bucket:
+        return 0.0
+    cutoff = now - _MEDIA_STATS_WINDOW_SECONDS
+    while bucket and bucket[0][0] < cutoff:
+        bucket.popleft()
+    if not bucket:
+        return 0.0
+    total = sum(amount for _, amount in bucket)
+    span = max(0.5, now - bucket[0][0])
+    return total / span
+
 
 # Metadata is deliberately independent of Seedr. The cache survives requests
 # within a Render instance, while the global libtorrent session keeps DHT state
@@ -3112,6 +3145,7 @@ async def seedr_hls_resource(request: Request, file_id: str, u: str = Query(...)
 
     content_type = str(response.headers.get("content-type") or "").lower()
     body = response.content
+    _record_media_bytes(file_id, len(body))
 
     if "mpegurl" in content_type or "#EXTM3U" in body[:200].decode("utf-8", errors="ignore"):
         text = body.decode("utf-8", errors="replace")
@@ -3143,6 +3177,13 @@ async def seedr_hls_resource(request: Request, file_id: str, u: str = Query(...)
         headers=response_headers,
     )
 
+
+@app.get("/api/seedr/media/video/{file_id}/stats")
+async def seedr_video_media_stats(file_id: str):
+    return {
+        "bytesPerSecond": round(_media_download_speed(file_id), 2),
+        "windowSeconds": _MEDIA_STATS_WINDOW_SECONDS,
+    }
 
 @app.get("/api/seedr/media/video/{file_id}")
 async def seedr_video_media(file_id: str, request: Request):
@@ -3193,6 +3234,7 @@ async def seedr_video_media(file_id: str, request: Request):
     async def body_stream():
         try:
             async for chunk in response.aiter_bytes():
+                _record_media_bytes(file_id, len(chunk))
                 yield chunk
         finally:
             await response.aclose()
