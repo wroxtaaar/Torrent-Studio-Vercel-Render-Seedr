@@ -33,10 +33,16 @@ SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "epis
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
 TORRENT_METADATA_API_URL = os.getenv("TORRENT_METADATA_API_URL", "https://torrentmeta.fly.dev").rstrip("/")
+FAST_SEARCH_TEST_URL = os.getenv("FAST_SEARCH_TEST_URL", "https://torrent-search-test.onrender.com").rstrip("/")
 SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "2.25"))
 SEARCH_TOTAL_TIMEOUT_SECONDS = float(os.getenv("SEARCH_TOTAL_TIMEOUT_SECONDS", "2.75"))
 SEARCH_GRACE_SECONDS = float(os.getenv("SEARCH_GRACE_SECONDS", "0.2"))
 SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
+FAST_SEARCH_TRACKERS = (
+    "http://tracker.dler.org:6969/announce",
+    "http://tracker2.dler.org:80/announce",
+    "http://1337.abcvg.info:80/announce",
+)
 TORRENT_METADATA_CACHE_FILE = Path(os.getenv("TORRENT_METADATA_CACHE_FILE", "/app/.torrent_metadata_cache.json"))
 TORRENT_METADATA_JOB_TIMEOUT_SECONDS = float(os.getenv("TORRENT_METADATA_JOB_TIMEOUT_SECONDS", "60"))
 TORRENT_METADATA_ITORRENTS_BASE_URL = os.getenv("TORRENT_METADATA_ITORRENTS_BASE_URL", "https://itorrents.net/torrent").rstrip("/")
@@ -1883,214 +1889,196 @@ async def search_knaben(query: str, limit: int = 100) -> list[dict[str, Any]]:
 
 
 
+async def search_torrents_csv(query: str, limit: int) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            response = await client.get(
+                "https://torrents-csv.com/service/search",
+                params={"q": query, "size": min(limit, 50), "type": "torrent"},
+                headers={"Accept": "application/json", "User-Agent": "TorrentStudio/1.0"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        rows = payload if isinstance(payload, list) else (
+            payload.get("torrents", []) if isinstance(payload, dict) else []
+        )
+        results: list[dict[str, Any]] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            h = str(item.get("infohash") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", h):
+                continue
+            title = str(item.get("name") or "Untitled").strip()
+            if not title:
+                continue
+            results.append({
+                "guid": f"torrents-csv-{h}",
+                "title": title,
+                "size": int(float(item.get("size_bytes") or 0)),
+                "seeders": int(item.get("seeders") or 0),
+                "leechers": int(item.get("leechers") or 0),
+                "indexer": "torrents-csv",
+                "protocol": "torrent",
+                "publishDate": (
+                    datetime.fromtimestamp(
+                        int(item.get("created_unix") or 0), tz=timezone.utc
+                    ).isoformat()
+                    if item.get("created_unix") else ""
+                ),
+                "infoHash": h,
+                "magnetUrl": f"magnet:?xt=urn:btih:{h}&dn={quote(title, safe='')}",
+                "downloadUrl": f"magnet:?xt=urn:btih:{h}&dn={quote(title, safe='')}",
+                "infoUrl": "",
+                "sourceUrl": "",
+                "descriptorUrl": "",
+            })
+        return {"source": "torrents-csv", "elapsedMs": round((time.monotonic() - started) * 1000), "results": results}
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.info("Torrents-CSV search failed for '%s': %s", query, exc)
+        return {"source": "torrents-csv", "elapsedMs": round((time.monotonic() - started) * 1000), "results": [], "error": str(exc)}
+
+
+async def search_apibay(query: str, limit: int) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            response = await client.get(
+                "https://apibay.org/q.php",
+                params={"q": query, "cat": "0"},
+                headers={"Accept": "application/json", "User-Agent": "TorrentStudio/1.0"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        rows = payload if isinstance(payload, list) else []
+        results: list[dict[str, Any]] = []
+        for item in rows[:limit]:
+            if not isinstance(item, dict):
+                continue
+            h = str(item.get("info_hash") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", h):
+                continue
+            title = str(item.get("name") or "Untitled").strip()
+            if not title:
+                continue
+            results.append({
+                "guid": f"apibay-{h}",
+                "title": title,
+                "size": int(float(item.get("size") or 0)),
+                "seeders": int(item.get("seeders") or 0),
+                "leechers": int(item.get("leechers") or 0),
+                "indexer": "apibay",
+                "protocol": "torrent",
+                "publishDate": "",
+                "infoHash": h,
+                "magnetUrl": f"magnet:?xt=urn:btih:{h}&dn={quote(title, safe='')}",
+                "downloadUrl": f"magnet:?xt=urn:btih:{h}&dn={quote(title, safe='')}",
+                "infoUrl": "",
+                "sourceUrl": "",
+                "descriptorUrl": "",
+            })
+        return {"source": "apibay", "elapsedMs": round((time.monotonic() - started) * 1000), "results": results}
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.info("APIBay search failed for '%s': %s", query, exc)
+        return {"source": "apibay", "elapsedMs": round((time.monotonic() - started) * 1000), "results": [], "error": str(exc)}
+
+
 async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
-    """Broad torrent search: known-good Knaben first, aggregate Render search as fallback/supplement."""
+    """Use the proven fast-search-test provider strategy for production search.
+
+    Search providers run in parallel and the endpoint has a hard total deadline.
+    Metadata resolution is deliberately not part of this request.
+    """
     query = query.strip()
     if not query:
         return []
 
     limit = min(max(int(limit or 50), 1), 50)
     cache_key = (re.sub(r"\s+", " ", query).lower(), limit)
-    now = asyncio.get_running_loop().time()
+    now = time.monotonic()
     cached = _search_cache.get(cache_key)
     if cached and now - cached[0] < SEARCH_CACHE_SECONDS:
         return cached[1]
 
-    normalized_query, season, episode = _media_search_parts(query)
-    normalized_query = normalized_query or query
-    target_tokens = [
-        token for token in _search_tokens(normalized_query)
-        if token not in SEARCH_STOPWORDS
-    ]
+    csv_task = asyncio.create_task(search_torrents_csv(query, limit))
+    api_task = asyncio.create_task(search_apibay(query, limit))
+    tasks = {csv_task, api_task}
+    providers: list[dict[str, Any]] = []
+    deadline = now + SEARCH_TOTAL_TIMEOUT_SECONDS
 
-    async def aggregate_fallback() -> list[dict[str, Any]]:
-        try:
-            async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
-                response = await client.post(
-                    f"{TORRENT_SEARCH_API_URL}/torrent/search",
-                    params={
-                        "query": normalized_query,
-                        "max_items": 300,
-                        "per_source": 50,
-                    },
-                    headers={"Accept": "application/json"},
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.info("Aggregate search fallback failed: %s", exc)
-            return []
-
-        if not isinstance(payload, list):
-            return []
-
-        results: list[dict[str, Any]] = []
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-
-            title = str(item.get("filename") or item.get("title") or "").strip()
-            if not title:
-                continue
-
-            title_tokens = set(_search_tokens(title))
-            if target_tokens and not all(token in title_tokens for token in target_tokens):
-                continue
-            if season is not None and not _season_episode_match(title, season, episode):
-                continue
-
-            category = str(item.get("category") or "").strip().lower()
-            if category and any(
-                blocked in category
-                for blocked in ("anime", "games", "music", "software", "books", "porn", "xxx", "adult")
-            ):
-                continue
-            if category and not any(
-                allowed in category
-                for allowed in ("video", "movie", "tv", "television", "series")
-            ):
-                continue
-
-            magnet = str(item.get("magnet_link") or item.get("magnetUrl") or "").strip()
-            h = info_hash(magnet)
-            raw_hash = str(item.get("infoHash") or item.get("hash") or "").strip().lower()
-            if not h and re.fullmatch(r"[0-9a-f]{40}", raw_hash):
-                h = raw_hash
-
-            results.append({
-                "guid": str(item.get("guid") or item.get("id") or f"aggregate-{h or title}"),
-                "title": title,
-                "size": int(item.get("size") or 0) if isinstance(item.get("size"), (int, float)) else parse_size(str(item.get("size") or "")),
-                "seeders": int(item.get("seeders") or 0),
-                "leechers": int(item.get("leechers") or 0),
-                "indexer": str(item.get("indexer") or item.get("source") or "torrent-search").strip(),
-                "protocol": "torrent",
-                "publishDate": str(item.get("publishDate") or item.get("date") or ""),
-                "infoHash": h if re.fullmatch(r"[0-9a-f]{40}", h, re.I) else "",
-                "magnetUrl": magnet or None,
-                "downloadUrl": magnet or None,
-                "infoUrl": str(item.get("infoUrl") or item.get("page_url") or ""),
-                "sourceUrl": str(item.get("sourceUrl") or item.get("page_url") or ""),
-                "descriptorUrl": str(
-                    item.get("torrentUrl")
-                    or item.get("torrent_url")
-                    or item.get("descriptorUrl")
-                    or ""
-                ),
-                "category": str(item.get("category") or ""),
-            })
-
-        return results
-
-    # Start both search paths together. The old sequential flow could spend
-    # 8.5s waiting on Knaben before even starting the fallback, which made a
-    # perfectly healthy search look stuck. Return the first useful provider
-    # quickly, with a short grace period for the other provider to contribute.
-    knaben_task = asyncio.create_task(search_knaben(query, limit=limit))
-    aggregate_task = asyncio.create_task(
-        asyncio.wait_for(aggregate_fallback(), timeout=5.5)
-    )
-
-    knaben_results: list[dict[str, Any]] = []
-    aggregate_results: list[dict[str, Any]] = []
-    pending = {knaben_task, aggregate_task}
-
-    search_deadline = asyncio.get_running_loop().time() + SEARCH_TOTAL_TIMEOUT_SECONDS
     try:
-        while pending:
-            remaining = search_deadline - asyncio.get_running_loop().time()
+        while tasks:
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
-                logger.info("Search deadline reached for '%s'", query)
+                logger.info("Fast search deadline reached for '%s'", query)
                 break
-
             done, pending = await asyncio.wait(
-                pending,
+                tasks,
                 timeout=remaining,
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            tasks = pending
             if not done:
-                logger.info("Search deadline reached for '%s'", query)
+                logger.info("Fast search deadline reached for '%s'", query)
                 break
 
             for task in done:
                 try:
-                    result = await task
-                except (asyncio.TimeoutError, Exception) as exc:
-                    logger.info("Search provider failed for '%s': %s", query, exc)
+                    provider = await task
+                except Exception as exc:
+                    logger.info("Fast search provider failed for '%s': %s", query, exc)
                     continue
+                if isinstance(provider, dict):
+                    providers.append(provider)
 
-                if task is knaben_task:
-                    knaben_results = result if isinstance(result, list) else []
-                else:
-                    aggregate_results = result if isinstance(result, list) else []
-
-                # A non-empty provider result is enough to render the search.
-                # Give the other provider only a tiny grace period.
-                if result:
-                    if pending:
-                        remaining = max(
-                            0.0,
-                            min(
-                                SEARCH_GRACE_SECONDS,
-                                search_deadline - asyncio.get_running_loop().time(),
-                            ),
-                        )
-                        if remaining > 0:
+            # Same strategy as the proven test service: once one provider has
+            # useful results, give the other only a tiny grace period.
+            if any(provider.get("results") for provider in providers):
+                if tasks:
+                    grace = max(0.0, min(
+                        SEARCH_GRACE_SECONDS,
+                        deadline - time.monotonic(),
+                    ))
+                    if grace > 0:
+                        done2, pending2 = await asyncio.wait(tasks, timeout=grace)
+                        tasks = pending2
+                        for task in done2:
                             try:
-                                grace_done, pending_after_grace = await asyncio.wait(
-                                    pending,
-                                    timeout=remaining,
-                                )
-                                pending = pending_after_grace
-                                for grace_task in grace_done:
-                                    try:
-                                        grace_result = await grace_task
-                                    except (asyncio.TimeoutError, Exception) as exc:
-                                        logger.info("Search grace provider failed for '%s': %s", query, exc)
-                                        continue
-                                    if grace_task is knaben_task:
-                                        knaben_results = grace_result if isinstance(grace_result, list) else []
-                                    else:
-                                        aggregate_results = grace_result if isinstance(grace_result, list) else []
+                                provider = await task
                             except Exception as exc:
-                                logger.info("Search grace period failed for '%s': %s", query, exc)
-                    break
+                                logger.info("Fast search grace provider failed for '%s': %s", query, exc)
+                                continue
+                            if isinstance(provider, dict):
+                                providers.append(provider)
+                break
     finally:
-        for task in (knaben_task, aggregate_task):
+        for task in (csv_task, api_task):
             if not task.done():
                 task.cancel()
-        await asyncio.gather(knaben_task, aggregate_task, return_exceptions=True)
+        await asyncio.gather(csv_task, api_task, return_exceptions=True)
 
-    results: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    # Preserve the known-good Knaben results first.
-    for item in knaben_results:
-        if not isinstance(item, dict):
-            continue
-        key = str(item.get("infoHash") or item.get("magnetUrl") or item.get("guid") or "").strip().lower()
-        if key and key in seen:
-            continue
-        if key:
-            seen.add(key)
-        results.append(item)
-        if len(results) >= limit:
-            break
-
-    # Supplement missing results from the Render-hosted aggregate index.
-    if len(results) < limit:
-        for item in aggregate_results:
+    merged: dict[str, dict[str, Any]] = {}
+    for provider in providers:
+        for item in provider.get("results") or []:
             if not isinstance(item, dict):
                 continue
-            key = str(item.get("infoHash") or item.get("magnetUrl") or item.get("guid") or "").strip().lower()
-            if key and key in seen:
-                continue
-            if key:
-                seen.add(key)
-            results.append(item)
-            if len(results) >= limit:
-                break
+            h = str(item.get("infoHash") or "").strip().lower()
+            key = h or str(item.get("magnetUrl") or item.get("title") or "").strip().lower()
+            if key and key not in merged:
+                merged[key] = item
 
+    results = list(merged.values())
+    results.sort(
+        key=lambda item: (
+            int(item.get("seeders") or 0),
+            int(item.get("leechers") or 0),
+            int(item.get("size") or 0),
+        ),
+        reverse=True,
+    )
     results = results[:limit]
     _search_cache[cache_key] = (now, results)
     if len(_search_cache) > 100:
@@ -2098,11 +2086,10 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
         _search_cache.pop(oldest, None)
 
     logger.info(
-        "Search '%s': %d results (Knaben=%d, aggregate=%d)",
+        "Fast search '%s': %d results (providers=%s)",
         query,
         len(results),
-        len(knaben_results),
-        len(aggregate_results),
+        [(p.get("source"), len(p.get("results") or []), p.get("elapsedMs")) for p in providers],
     )
     return results
 
