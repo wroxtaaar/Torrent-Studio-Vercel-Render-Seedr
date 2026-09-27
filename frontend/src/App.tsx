@@ -1626,7 +1626,6 @@ export default function App() {
                         // top-level library consistent even when the folder has
                         // only one file; open it to access file actions.
                         return (
-                        return (
                           <div
                             key={folder.folderId}
                             className="h-full rounded-xl bg-slate-900/80 border border-slate-800 px-3 py-3 hover:border-cyan-500/30 transition"
