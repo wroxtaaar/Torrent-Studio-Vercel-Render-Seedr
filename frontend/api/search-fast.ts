@@ -98,7 +98,7 @@ export async function GET(req: Request): Promise<Response> {
   const targetTokens = tokens(normalizedTitle).filter((t) => !STOPWORDS.has(t));
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 4500);
+  const timeout = setTimeout(() => controller.abort(), 8500);
 
   try {
     const response = await fetch(KNABEN_URL, {
@@ -206,4 +206,4 @@ export async function GET(req: Request): Promise<Response> {
   }
 }
 
-export const maxDuration = 6;
+export const maxDuration = 10;
