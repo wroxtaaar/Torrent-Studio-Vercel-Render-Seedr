@@ -540,39 +540,61 @@ def direct_folder_summary(folder_id: str, path: str, payload: dict[str, Any]) ->
     }
 
 
-async def build_seedr_metadata_tree(folder_id: str, path: str, depth: int = 0) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if depth > 8:
-        return ({"id": folder_id, "folderId": folder_id, "name": Path(path.rstrip("/")).name or "Root Files", "path": path, "filesCount": 0, "totalSize": 0, "folderCount": 0}, [])
+async def build_seedr_metadata_tree(folder_id: str, path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    Return metadata for the requested folder level only.
 
+    The first library request must be cheap: it needs enough information to
+    render folder cards (name, file count, total size), but it must not walk
+    every descendant folder. Descendant metadata and actual file rows are
+    loaded when that folder is opened.
+    """
     payload = await seedr_folder_payload(folder_id)
     summary = direct_folder_summary(folder_id, path, payload)
 
-    child_jobs: list[asyncio.Future] = []
-    child_meta: list[tuple[dict[str, Any], str]] = []
+    children: list[dict[str, Any]] = []
     for raw in arr(payload, ("folders", "directories")):
         if not isinstance(raw, dict):
             continue
         child_id = str(raw.get("id") or raw.get("folder_id") or "").strip()
         if not child_id:
             continue
+
         child_name = str(raw.get("name") or raw.get("title") or child_id).strip() or child_id
-        child_path = path.rstrip("/") + "/" + child_name
-        child_meta.append((raw, child_path))
-        child_jobs.append(build_seedr_metadata_tree(child_id, child_path, depth + 1))
 
-    children: list[dict[str, Any]] = []
-    if child_jobs:
-        results = await asyncio.gather(*child_jobs, return_exceptions=True)
-        for result in results:
-            if isinstance(result, tuple):
-                child_summary, grand_children = result
-                children.append(child_summary)
-                children.extend(grand_children)
+        # Seedr's folder list may provide size/count metadata directly.
+        child_file_count = 0
+        child_total_size = 0
+        for key in ("files_count", "file_count", "filesCount", "fileCount", "count"):
+            value = raw.get(key)
+            if value is not None:
+                try:
+                    child_file_count = max(0, int(value))
+                    break
+                except (TypeError, ValueError):
+                    pass
+        for key in ("size", "total_size", "totalSize"):
+            value = raw.get(key)
+            if value is not None:
+                try:
+                    child_total_size = max(0, int(float(value)))
+                    break
+                except (TypeError, ValueError):
+                    pass
 
-    # Aggregate descendant file counts/sizes so the UI can render folder
-    # metadata immediately without downloading the actual file list.
-    summary["filesCount"] += sum(int(item.get("filesCount") or 0) for item in children)
-    summary["totalSize"] += sum(int(item.get("totalSize") or 0) for item in children)
+        children.append({
+            "id": child_id,
+            "folderId": child_id,
+            "name": child_name,
+            "path": path.rstrip("/") + "/" + child_name,
+            "filesCount": child_file_count,
+            "totalSize": child_total_size,
+            "folderCount": 0,
+        })
+
+    # If Seedr did not expose counts/sizes on folder entries, do not issue
+    # additional requests here. Those values are resolved by the next call
+    # when the user opens that folder.
     summary["folderCount"] = len(children)
     return summary, children
 
@@ -595,13 +617,12 @@ async def get_seedr_metadata_tree() -> dict[str, Any]:
         if not root.isdigit():
             return {"configured": True, "root": None, "folders": []}
 
-        root_summary, all_children = await build_seedr_metadata_tree(root, "/Torrent Studio")
-        result = {
+        root_summary, children = await build_seedr_metadata_tree(root, "/Torrent Studio")
+        return {
             "configured": True,
             "root": root_summary,
-            "folders": all_children,
+            "folders": children,
         }
-        return result
 
     _seedr_metadata_task = asyncio.create_task(build())
     try:
@@ -610,7 +631,6 @@ async def get_seedr_metadata_tree() -> dict[str, Any]:
         return result
     finally:
         _seedr_metadata_task = None
-
 
 @app.get("/api/seedr/library")
 async def seedr_library_metadata():
