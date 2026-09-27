@@ -239,7 +239,7 @@ export const api = {
       seedrFolderId: data?.folder_id ?? data?.task?.folder_id ?? null,
       selectionApplied: false
     };
-  }
+  },
 
 
   async getSeedrQuota(): Promise<{
