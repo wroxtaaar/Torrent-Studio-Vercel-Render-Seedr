@@ -31,7 +31,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
   const [error, setError] = useState('');
   const [sortBy, setSortBy] = useState<'time' | 'size' | 'seeds'>('time');
   const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
-  const [minSeeders, setMinSeeders] = useState(1);
+  const [minSeeders, setMinSeeders] = useState(0);
   const [showRecentSearches, setShowRecentSearches] = useState(false);
   const [addingTorrentKey, setAddingTorrentKey] = useState<string | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
