@@ -18,7 +18,9 @@ import {
   Video,
   X,
   Minimize2,
-  Maximize2
+  Maximize2,
+  Search,
+  Loader2
 } from 'lucide-react';
 import Hls from 'hls.js';
 import { StorageFile } from '../types/index.ts';
@@ -58,6 +60,16 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | undefined>(undefined);
   const [selectedSubtitleIndex, setSelectedSubtitleIndex] = useState<number | undefined>(undefined);
   const [trackNotice, setTrackNotice] = useState('');
+  const [subtitleSearchOpen, setSubtitleSearchOpen] = useState(false);
+  const [subtitleSearchLanguage, setSubtitleSearchLanguage] = useState('en');
+  const [subtitleSearchQuery, setSubtitleSearchQuery] = useState('');
+  const [subtitleSearchResults, setSubtitleSearchResults] = useState<Array<{
+    fileId: string; language: string; release: string; downloads: number; format: string; hearingImpaired: boolean;
+  }>>([]);
+  const [subtitleSearchLoading, setSubtitleSearchLoading] = useState(false);
+  const [subtitleDownloadId, setSubtitleDownloadId] = useState<string | null>(null);
+  const [subtitleSearchError, setSubtitleSearchError] = useState('');
+
   const resumeTimeRef = useRef(0);
   const resumePlayingRef = useRef(false);
   const subtitleTrackRef = useRef<HTMLTrackElement>(null);
@@ -256,6 +268,59 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const track = subtitleTrackRef.current?.track;
     if (track) track.mode = selectedSubtitleIndex === undefined ? 'disabled' : 'showing';
   }, [selectedSubtitleIndex, subtitleTracks]);
+
+  const openSubtitleSearch = () => {
+    if (!file) return;
+    const query = file.name.replace(/\\.(mkv|mp4|m4v|webm|mov|avi|ts)$/i, '').replace(/[._-]+/g, ' ').trim();
+    setSubtitleSearchQuery(query);
+    setSubtitleSearchResults([]);
+    setSubtitleSearchError('');
+    setSubtitleSearchOpen(true);
+  };
+
+  const runSubtitleSearch = async () => {
+    if (!subtitleSearchQuery.trim()) return;
+    setSubtitleSearchLoading(true);
+    setSubtitleSearchError('');
+    try {
+      const { api } = await import('../api/client.ts');
+      const results = await api.searchSubtitles(subtitleSearchQuery.trim(), subtitleSearchLanguage);
+      setSubtitleSearchResults(results);
+      if (!results.length) setSubtitleSearchError('No subtitles found for this title and language.');
+    } catch (error) {
+      setSubtitleSearchError(error instanceof Error ? error.message : 'Subtitle search failed.');
+    } finally {
+      setSubtitleSearchLoading(false);
+    }
+  };
+
+  const downloadSelectedSubtitle = async (result: {
+    fileId: string; language: string; release: string; downloads: number; format: string; hearingImpaired: boolean;
+  }) => {
+    setSubtitleDownloadId(result.fileId);
+    setSubtitleSearchError('');
+    try {
+      const { api } = await import('../api/client.ts');
+      const downloaded = await api.downloadSubtitle(result.fileId);
+      const nextIndex = subtitleTracks.length ? Math.max(...subtitleTracks.map(track => track.index)) + 1 : 1000;
+      const track = {
+        index: nextIndex,
+        language: downloaded.language || result.language || 'en',
+        title: result.release || downloaded.title || 'Downloaded subtitles',
+        codec: 'VTT',
+        url: downloaded.url
+      };
+      setSubtitleTracks(prev => [...prev, track]);
+      setSelectedSubtitleIndex(nextIndex);
+      setSubtitleSearchOpen(false);
+      setTrackNotice('Subtitle loaded');
+      window.setTimeout(() => setTrackNotice(current => current === 'Subtitle loaded' ? '' : current), 1800);
+    } catch (error) {
+      setSubtitleSearchError(error instanceof Error ? error.message : 'Subtitle download failed.');
+    } finally {
+      setSubtitleDownloadId(null);
+    }
+  };
 
   if (!file) return null;
 
@@ -807,6 +872,17 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
                 </label>
               )}
 
+              {isVideo && (
+                <button
+                  onClick={openSubtitleSearch}
+                  className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 hover:bg-slate-700 transition"
+                  title="Download subtitles"
+                >
+                  <Download className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Download subtitles…</span>
+                </button>
+              )}
+
               {subtitleTracks.length > 0 && (
                 <label className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2 py-1.5">
                   <Captions className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
@@ -870,6 +946,88 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           </div>
         </div>
       </div>
+
+      {subtitleSearchOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+              <div>
+                <h3 className="font-semibold text-slate-100">Download subtitles</h3>
+                <p className="mt-1 text-xs text-slate-400">Search OpenSubtitles and attach a subtitle without interrupting playback.</p>
+              </div>
+              <button onClick={() => setSubtitleSearchOpen(false)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                  <input
+                    value={subtitleSearchQuery}
+                    onChange={e => setSubtitleSearchQuery(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') void runSubtitleSearch(); }}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 py-2.5 pl-9 pr-3 text-sm text-slate-100 outline-none focus:border-cyan-500"
+                    placeholder="Movie or episode name"
+                  />
+                </div>
+                <select
+                  value={subtitleSearchLanguage}
+                  onChange={e => setSubtitleSearchLanguage(e.target.value)}
+                  className="rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200 outline-none"
+                >
+                  <option value="en">English</option>
+                  <option value="hi">Hindi</option>
+                  <option value="ur">Urdu</option>
+                  <option value="ta">Tamil</option>
+                  <option value="te">Telugu</option>
+                  <option value="bn">Bengali</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="de">German</option>
+                  <option value="ja">Japanese</option>
+                  <option value="ko">Korean</option>
+                </select>
+                <button
+                  onClick={() => void runSubtitleSearch()}
+                  disabled={subtitleSearchLoading || !subtitleSearchQuery.trim()}
+                  className="rounded-lg bg-cyan-500 px-4 text-sm font-semibold text-slate-950 disabled:opacity-50"
+                >
+                  {subtitleSearchLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Search'}
+                </button>
+              </div>
+
+              {subtitleSearchError && (
+                <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                  {subtitleSearchError}
+                </div>
+              )}
+
+              <div className="max-h-72 overflow-y-auto space-y-2">
+                {subtitleSearchResults.map(result => (
+                  <div key={result.fileId} className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm text-slate-100">{result.release}</div>
+                      <div className="mt-1 text-[11px] text-slate-500">
+                        {result.language.toUpperCase()} · {result.format.toUpperCase()} · {result.downloads.toLocaleString()} downloads
+                        {result.hearingImpaired ? ' · HI' : ''}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => void downloadSelectedSubtitle(result)}
+                      disabled={subtitleDownloadId !== null}
+                      className="shrink-0 rounded-lg bg-slate-800 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+                    >
+                      {subtitleDownloadId === result.fileId ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Use'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
