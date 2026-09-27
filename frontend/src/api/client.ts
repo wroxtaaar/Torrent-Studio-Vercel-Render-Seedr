@@ -41,7 +41,12 @@ export const api = {
       limit: String(Math.min(Math.max(limit, 1), 50))
     });
 
-    const res = await apiFetch('/api/search?' + params.toString());
+    // Search is served by the Vercel function so it remains available even
+    // when the Render Seedr backend is asleep.
+    const searchBase = import.meta.env.DEV
+      ? API_BASE
+      : window.location.origin;
+    const res = await fetch(searchBase + '/api/search-fast?' + params.toString());
     const body = await res.text();
 
     let data: any = null;
