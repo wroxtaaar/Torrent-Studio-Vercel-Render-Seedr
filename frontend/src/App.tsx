@@ -684,6 +684,43 @@ export default function App() {
     setSeedrError(null);
 
     try {
+      // Check authentication explicitly so the Library panel reports the
+      // actual Seedr state instead of turning every failure into a generic
+      // library error.
+      try {
+        const auth = await api.getSeedrAuthStatus();
+        if (!auth.configured) {
+          setSeedrError('SEEDR_TOKEN_MISSING: Seedr API token is not configured in Render.');
+          setSeedrConfigured(false);
+          setSeedrLoading(false);
+          return null;
+        }
+        if (!auth.authenticated) {
+          setSeedrError(
+            auth.code === 'SEEDR_TOKEN_REJECTED'
+              ? 'SEEDR_TOKEN_REJECTED: Seedr rejected the configured API token.'
+              : auth.code === 'SEEDR_LIBRARY_ACCESS_DENIED'
+                ? 'SEEDR_LIBRARY_ACCESS_DENIED: Seedr denied the library/auth operation.'
+                : `Seedr authentication check failed: ${auth.message || auth.code}`
+          );
+          setSeedrConfigured(true);
+          setSeedrLoading(false);
+          return null;
+        }
+        setSeedrError(null);
+      } catch (error: any) {
+        const code = String(error?.code || '').trim();
+        setSeedrError(
+          code === 'SEEDR_TOKEN_REJECTED'
+            ? 'SEEDR_TOKEN_REJECTED: Seedr rejected the configured API token.'
+            : code === 'SEEDR_LIBRARY_ACCESS_DENIED'
+              ? 'SEEDR_LIBRARY_ACCESS_DENIED: Seedr denied the library/auth operation.'
+              : 'SEEDR_QUOTA_UNAVAILABLE: Seedr authentication status is temporarily unavailable.'
+        );
+        setSeedrLoading(false);
+        return null;
+      }
+
       // Keep the Seedr storage/quota cards populated independently of the
       // library metadata request. Quota is small and should never delay the
       // library UI or the download progress bar.
