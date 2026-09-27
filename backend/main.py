@@ -2885,28 +2885,122 @@ async def seedr_add_selected(request: Request):
         if metadata_index not in selected_set
     ]
 
-    existing = await find_task_by_hash(h)
-    created = False
-    task = existing
-    if not task:
-        task = await add_task(magnet, int(folder))
-        created = True
+    # Seedr's collection-level GET /tasks endpoint is currently returning
+    # HTTP 422 for this account, while the same account can successfully
+    # create tasks with POST /tasks. Duplicate lookup is therefore optional
+    # here; a failed lookup must not block a new selected transfer.
+    existing = None
+    try:
+        existing = await find_task_by_hash(h)
+    except SeedrError as exc:
+        if exc.status_code in (400, 404, 405, 422):
+            logger.warning(
+                "Seedr selected-file duplicate lookup skipped: status=%s code=%s detail=%s",
+                exc.status_code,
+                exc.code,
+                exc.detail,
+            )
+        else:
+            raise
+
+    if existing:
+        # Never mutate an existing Seedr task's file-selection state. That could
+        # alter a transfer the user did not start from this selector.
+        raise HTTPException(
+            409,
+            "A Seedr task for this torrent already exists. Remove that task from Seedr before retrying selective transfer.",
+        )
+
+    # Enforce the selected subset against live Seedr quota on the backend as well
+    # as in the UI. This prevents stale browser quota data from starting a task
+    # whose selected files do not fit.
+    try:
+        quota_payload = await seedr_data(await seedr_request("/user"))
+        storage = quota_payload.get("account", {}).get("storage", {}) if isinstance(quota_payload, dict) else {}
+        if not isinstance(storage, dict):
+            storage = quota_payload.get("storage", {}) if isinstance(quota_payload, dict) else {}
+        result_dict = quota_payload if isinstance(quota_payload, dict) else {}
+        max_space = int(float(
+            storage.get("limit")
+            or storage.get("max_space")
+            or storage.get("maxSpace")
+            or result_dict.get("max_space", 0)
+            or result_dict.get("space_max", 0)
+            or 0
+        ))
+        used_space = int(float(
+            storage.get("used")
+            or storage.get("used_space")
+            or storage.get("usedSpace")
+            or result_dict.get("used_space", 0)
+            or result_dict.get("space_used", 0)
+            or 0
+        ))
+        remaining_space = max(0, max_space - used_space)
+    except (SeedrError, TypeError, ValueError, AttributeError) as exc:
+        logger.warning("Seedr selected-file quota check failed: %s", exc)
+        raise HTTPException(
+            503,
+            "Seedr account storage information is temporarily unavailable. Selective transfer was not started.",
+        ) from exc
+
+    if max_space <= 0 or used_space < 0 or used_space > max_space:
+        raise HTTPException(
+            503,
+            "Seedr account storage information is temporarily unavailable. Selective transfer was not started.",
+        )
+
+    if selected_size > remaining_space:
+        raise SeedrError(
+            "SEEDR_QUOTA_UNAVAILABLE",
+            413,
+            f"Selected files require {selected_size} bytes, but Seedr has only {remaining_space} bytes remaining.",
+        )
+
+    task = await add_task(magnet, int(folder))
+    created = True
 
     task = unwrap_seedr_task(task)
     tid = task_id(task)
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
 
+    # Selective transfer is unsafe unless the new task can be paused before
+    # the first unwanted-file write. Never continue on a pause failure.
     paused = False
     pause_error: str | None = None
     if created:
         try:
             await seedr_request(f"/tasks/{quote(tid)}/pause", "POST")
             paused = True
-        except HTTPException as exc:
-            # Pause is documented but may not be enabled for every account.
-            # The selection write is still attempted when pause is unavailable.
-            pause_error = str(exc.detail)
+        except (HTTPException, SeedrError) as exc:
+            pause_error = (
+                exc.detail if isinstance(exc, SeedrError)
+                else str(exc.detail)
+            )
+            cleanup_error = ""
+            try:
+                await seedr_request(f"/tasks/{quote(tid)}", "DELETE")
+            except (HTTPException, SeedrError) as cleanup_exc:
+                cleanup_error = (
+                    cleanup_exc.detail
+                    if isinstance(cleanup_exc, SeedrError)
+                    else str(cleanup_exc.detail)
+                )
+            detail = (
+                "Seedr could not pause the new task, so selective transfer was not started. "
+                "The temporary task was removed."
+            )
+            if cleanup_error:
+                detail += " Automatic task cleanup also failed; please remove the new task from Seedr."
+            logger.warning(
+                "Seedr selected-file pause failed: task=%s status=%s error=%s cleanup=%s",
+                tid,
+                getattr(exc, "status_code", 0),
+                pause_error,
+                cleanup_error or "ok",
+            )
+            raise HTTPException(503, detail)
 
     verification: list[int] = []
     write_errors: list[str] = []
@@ -2941,15 +3035,58 @@ async def seedr_add_selected(request: Request):
             write_errors.append(
                 f"{'MSB' if msb_first else 'LSB'} bitmap verification mismatch: got {actual}, expected {expected_positions}"
             )
-        except HTTPException as exc:
-            write_errors.append(f"{'MSB' if msb_first else 'LSB'} bitmap write failed: {exc.detail}")
+        except (HTTPException, SeedrError) as exc:
+            detail = (
+                exc.detail if isinstance(exc, SeedrError)
+                else str(exc.detail)
+            )
+            write_errors.append(
+                f"{'MSB' if msb_first else 'LSB'} bitmap write failed: {detail}"
+            )
+
+    # A failed bitmap write must never be turned into a 200 response. Otherwise
+    # the caller could believe the subset was selected while Seedr downloads the
+    # entire task. Since this route creates the task above, remove it while it is
+    # still paused and refuse to resume it.
+    if accepted_bitmap is None:
+        cleanup_error = ""
+        try:
+            await seedr_request(f"/tasks/{quote(tid)}", "DELETE")
+        except (HTTPException, SeedrError) as cleanup_exc:
+            cleanup_error = (
+                cleanup_exc.detail
+                if isinstance(cleanup_exc, SeedrError)
+                else str(cleanup_exc.detail)
+            )
+        detail = (
+            "Seedr did not accept and verify the selected-file bitmap. "
+            "The temporary task was not resumed."
+        )
+        if cleanup_error:
+            detail += " Automatic task cleanup failed; please remove the temporary task from Seedr."
+        logger.warning(
+            "Seedr selected-file bitmap failed: task=%s errors=%s cleanup=%s",
+            tid,
+            " | ".join(write_errors),
+            cleanup_error or "ok",
+        )
+        raise HTTPException(502, detail)
 
     resume_error: str | None = None
     if paused:
         try:
             await seedr_request(f"/tasks/{quote(tid)}/resume", "POST")
-        except HTTPException as exc:
-            resume_error = str(exc.detail)
+        except (HTTPException, SeedrError) as exc:
+            resume_error = (
+                exc.detail if isinstance(exc, SeedrError)
+                else str(exc.detail)
+            )
+            logger.warning(
+                "Seedr selected-file resume failed: task=%s status=%s error=%s",
+                tid,
+                getattr(exc, "status_code", 0),
+                resume_error,
+            )
 
     torrent_name = str(body.get("torrentName") or "").strip() or seedr_task_name(task) or f"Torrent {tid}"
     task_folder_id = seedr_task_folder_id(task)
