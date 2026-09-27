@@ -11,6 +11,15 @@ from fastapi.responses import FileResponse
 
 from main import app
 
+# main.py already exposes "/" as the API health endpoint. In the full-stack
+# container that route would win before the SPA route below, so replace only
+# that root route while leaving every other API route untouched.
+app.routes[:] = [
+    route
+    for route in app.routes
+    if not (getattr(route, "path", None) == "/" and getattr(route, "name", None) == "root")
+]
+
 FRONTEND_DIR = Path("/app/frontend-dist").resolve()
 INDEX_FILE = FRONTEND_DIR / "index.html"
 
