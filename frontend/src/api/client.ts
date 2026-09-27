@@ -35,10 +35,10 @@ const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
 
 export const api = {
   // Torrents (qBittorrent WebAPI)
-  async searchTorrents(query: string, limit = 10): Promise<TorrentSearchResult[]> {
+  async searchTorrents(query: string, limit = 50): Promise<TorrentSearchResult[]> {
     const params = new URLSearchParams({
       q: query,
-      limit: String(Math.min(Math.max(limit, 1), 10))
+      limit: String(Math.min(Math.max(limit, 1), 50))
     });
 
     const res = await apiFetch('/api/search?' + params.toString());
