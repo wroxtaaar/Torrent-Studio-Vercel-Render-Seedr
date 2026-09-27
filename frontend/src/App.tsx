@@ -1611,6 +1611,57 @@ export default function App() {
     }
   };
 
+  const findSeedrSubtitleTracks = useCallback((
+    file: { id: string; name: string; folderId: string; folderPath: string },
+    apiOrigin: string
+  ): StorageFile['subtitleTracks'] => {
+    const extension = (name: string) => name.match(/\.([^.]+)$/)?.[1]?.toLowerCase() || '';
+    const videoExt = extension(file.name);
+    if (!/^(mkv|mp4|m4v|webm|mov|avi|ts)$/.test(videoExt)) return [];
+
+    const videoBase = file.name.slice(0, -(videoExt.length + 1)).trim().toLowerCase();
+    const cachedSiblings = file.folderId
+      ? (seedrFolderContentsCache[file.folderId] || [])
+      : seedrAllPrefetchedFiles.filter(item =>
+          item.folderPath === file.folderPath || item.folderId === file.folderId
+        );
+
+    const languageNames: Record<string, string> = {
+      en: 'English', eng: 'English', hi: 'Hindi', hin: 'Hindi',
+      ar: 'Arabic', ara: 'Arabic', bn: 'Bengali', ben: 'Bengali',
+      es: 'Spanish', spa: 'Spanish', fr: 'French', fra: 'French',
+      de: 'German', deu: 'German', it: 'Italian', ita: 'Italian',
+      pt: 'Portuguese', por: 'Portuguese', ru: 'Russian', rus: 'Russian',
+      ja: 'Japanese', jpn: 'Japanese', ko: 'Korean', kor: 'Korean',
+      zh: 'Chinese', zho: 'Chinese'
+    };
+
+    return cachedSiblings
+      .filter(item => item.id !== file.id && /\.(srt|vtt)$/i.test(item.name))
+      .filter(item => {
+        const subtitleExt = extension(item.name);
+        const subtitleBase = item.name.slice(0, -(subtitleExt.length + 1)).trim().toLowerCase();
+        return subtitleBase === videoBase ||
+          subtitleBase.startsWith(videoBase + '.') ||
+          subtitleBase.startsWith(videoBase + ' ');
+      })
+      .map((item, index) => {
+        const subtitleExt = extension(item.name);
+        const subtitleBase = item.name.slice(0, -(subtitleExt.length + 1)).trim();
+        const suffix = subtitleBase.slice(videoBase.length).replace(/^[. _-]+/, '').trim();
+        const languageKey = suffix.split(/[. _-]+/)[0]?.toLowerCase() || '';
+        const language = languageNames[languageKey] ? languageKey : 'en';
+        return {
+          index,
+          language,
+          title: languageNames[languageKey] || suffix || 'Subtitles',
+          codec: subtitleExt.toUpperCase(),
+          url: apiOrigin + '/api/seedr/files/' + encodeURIComponent(item.id) +
+            '/subtitle?filename=' + encodeURIComponent(item.name)
+        };
+      });
+  }, [seedrAllPrefetchedFiles, seedrFolderContentsCache]);
+
   const handleStreamSeedrFile = async (file: { id: string; streamId?: string; name: string; size: number; folderId: string; folderPath: string }) => {
     // Stage 1: the clicked button immediately enters a loading state while
     // Render resolves the Seedr presentation/proxy URL. The player is opened
