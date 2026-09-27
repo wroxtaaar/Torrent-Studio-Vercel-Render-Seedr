@@ -123,37 +123,6 @@ app.add_middleware(
 )
 
 @app.middleware("http")
-async def diagnose_seedr_selected_request(request: Request, call_next):
-    if request.url.path == "/api/seedr/tasks/add-selected" and request.method.upper() == "POST":
-        content_type = str(request.headers.get("content-type") or "")
-        content_length = str(request.headers.get("content-length") or "")
-        try:
-            body = await request.body()
-            parsed = json.loads(body.decode("utf-8")) if body else None
-            shape = sorted(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__
-            logger.info(
-                "Seedr selected-file request trace: content_type=%s content_length=%s json_shape=%s",
-                content_type,
-                content_length or str(len(body)),
-                shape,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Seedr selected-file request trace parse failed: content_type=%s content_length=%s error=%s",
-                content_type,
-                content_length,
-                type(exc).__name__,
-            )
-        response = await call_next(request)
-        logger.info(
-            "Seedr selected-file request trace response: status=%s",
-            response.status_code,
-        )
-        return response
-    return await call_next(request)
-
-
-@app.middleware("http")
 async def add_timing_allow_origin(request: Request, call_next):
     # Allows the frontend to read Resource Timing transfer sizes for the
     # cross-origin Render media stream when the frontend is hosted on Vercel.
@@ -165,6 +134,7 @@ class MagnetRequest(BaseModel):
     magnet: str
     folder_id: str | int | None = None
     torrent_name: str | None = None
+    size: int | float | None = None
 
 
 
@@ -2789,393 +2759,6 @@ async def seedr_inspect_selection(body: MagnetRequest):
         "writeTested": False,
     }
 
-@app.post("/api/seedr/tasks/prepare")
-async def seedr_prepare(body: MagnetRequest):
-    if not SEEDR_TOKEN:
-        raise HTTPException(503, "Seedr is not configured")
-    folder = str(body.folder_id or SEEDR_LIBRARY_FOLDER_ID).strip()
-    if not folder.isdigit():
-        raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
-    magnet = normalize_magnet(body.magnet)
-    h = info_hash(magnet)
-    if not h:
-        raise HTTPException(400, "A valid BTIH magnet link is required")
-    existing = await find_task_by_hash(h)
-    created = False
-    task = existing
-    if not task:
-        task = await add_task(magnet, int(folder))
-        created = True
-    tid = task_id(task)
-    if not tid:
-        raise HTTPException(502, "Seedr did not return a task id")
-    # Seedr pause is intentionally not used. Free accounts may not support
-    # pausing reliably, and metadata preparation must never depend on it.
-    files = []
-    for _ in range(8):
-        try:
-            files = await task_contents(tid)
-        except HTTPException:
-            files = []
-        if files:
-            break
-        await asyncio.sleep(.4)
-    return {
-        "taskId": int(tid) if tid.isdigit() else tid,
-        "name": str(task.get("title") or task.get("name") or ""),
-        "files": files,
-        "created": created,
-        "paused": False,
-    }
-
-def decode_seedr_unwanted(value: Any, file_count: int, msb_first: bool = False) -> list[int]:
-    raw_value = seedr_data(value)
-    encoded = raw_value if isinstance(raw_value, str) else (
-        raw_value.get("unwanted") if isinstance(raw_value, dict) else None
-    )
-    if not encoded:
-        return []
-    try:
-        raw = base64.b64decode(str(encoded), validate=True)
-    except Exception:
-        return []
-
-    unwanted: list[int] = []
-    for index in range(max(0, int(file_count))):
-        byte_index = index // 8
-        bit_index = index % 8
-        if byte_index >= len(raw):
-            break
-        mask = (1 << (7 - bit_index)) if msb_first else (1 << bit_index)
-        if raw[byte_index] & mask:
-            unwanted.append(index)
-    return unwanted
-
-
-def build_seedr_unwanted(file_count: int, unwanted_indexes: list[int], msb_first: bool = False) -> str:
-    size = max(0, (int(file_count) + 7) // 8)
-    raw = bytearray(size)
-    for index in unwanted_indexes:
-        if index < 0 or index >= file_count:
-            continue
-        byte_index = index // 8
-        bit_index = index % 8
-        mask = (1 << (7 - bit_index)) if msb_first else (1 << bit_index)
-        raw[byte_index] |= mask
-    return base64.b64encode(bytes(raw)).decode("ascii")
-
-
-@app.post("/api/seedr/tasks/add-selected")
-async def seedr_add_selected(request: Request):
-    """Add a magnet to Seedr and apply/verify its unwanted-file bitmap."""
-    # Keep request parsing inside the handler instead of FastAPI's automatic
-    # dict validation. The browser normally sends JSON, but a proxy/browser
-    # edge-case that strips or changes the body should produce a clear 400
-    # rather than an opaque 422 before this endpoint can explain the problem.
-    try:
-        body = await request.json()
-    except Exception as exc:
-        content_type = str(request.headers.get("content-type") or "")
-        logger.warning(
-            "Seedr selected-file request body parse failed: content_type=%s error=%s",
-            content_type,
-            type(exc).__name__,
-        )
-        raise HTTPException(
-            400,
-            "Seedr selected-file request must contain a valid JSON object.",
-        ) from exc
-
-    if not isinstance(body, dict):
-        logger.warning(
-            "Seedr selected-file request body has invalid type: %s",
-            type(body).__name__,
-        )
-        raise HTTPException(
-            400,
-            "Seedr selected-file request body must be a JSON object.",
-        )
-
-    if not SEEDR_TOKEN:
-        raise HTTPException(503, "Seedr is not configured")
-
-    folder = str(body.get("folder_id") or SEEDR_LIBRARY_FOLDER_ID).strip()
-    if not folder.isdigit():
-        raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
-
-    magnet = normalize_magnet(str(body.get("magnet") or "").strip())
-    h = info_hash(magnet)
-    if not h:
-        raise HTTPException(400, "A valid BTIH magnet link is required")
-
-    raw_files = body.get("files")
-    selected_indexes = body.get("selectedIndexes")
-    if not isinstance(raw_files, list) or not raw_files:
-        raise HTTPException(400, "Torrent file metadata is required")
-    if not isinstance(selected_indexes, list) or not selected_indexes:
-        raise HTTPException(400, "Select at least one file")
-
-    metadata_indexes: list[int] = []
-    for item in raw_files:
-        if not isinstance(item, dict):
-            raise HTTPException(400, "Invalid torrent file metadata")
-        try:
-            metadata_indexes.append(int(item.get("index")))
-        except (TypeError, ValueError):
-            raise HTTPException(400, "Invalid torrent file index")
-
-    if len(set(metadata_indexes)) != len(metadata_indexes):
-        raise HTTPException(400, "Duplicate torrent file indexes are not allowed")
-
-    selected_set: set[int] = set()
-    for value in selected_indexes:
-        try:
-            selected_set.add(int(value))
-        except (TypeError, ValueError):
-            raise HTTPException(400, "Invalid selected file index")
-
-    unknown = selected_set.difference(metadata_indexes)
-    if unknown:
-        raise HTTPException(400, f"Selected file index not present in metadata: {sorted(unknown)}")
-
-    metadata_by_index = {
-        int(item["index"]): item
-        for item in raw_files
-    }
-    ordered_indexes = sorted(metadata_indexes)
-    selected_size = sum(
-        int(metadata_by_index[index].get("size") or 0)
-        for index in selected_set
-    )
-    total_size = sum(
-        int(item.get("size") or 0)
-        for item in raw_files
-    )
-    unwanted_positions = [
-        position
-        for position, metadata_index in enumerate(ordered_indexes)
-        if metadata_index not in selected_set
-    ]
-
-    # Do not preflight GET /tasks here. Seedr's collection-level task-list
-    # endpoint is returning HTTP 422 for this account, while POST /tasks works.
-    # A selective transfer should use the create response as the authoritative
-    # task identity; a broken duplicate-list endpoint must not block the add.
-    # If Seedr rejects the create because the torrent already exists, that
-    # response is surfaced normally instead of mutating an existing task.
-    
-    # Enforce the selected subset against live Seedr quota on the backend as well
-    # as in the UI. This prevents stale browser quota data from starting a task
-    # whose selected files do not fit.
-    try:
-        quota_payload = seedr_data(await seedr_request("/user"))
-        storage = quota_payload.get("account", {}).get("storage", {}) if isinstance(quota_payload, dict) else {}
-        if not isinstance(storage, dict):
-            storage = quota_payload.get("storage", {}) if isinstance(quota_payload, dict) else {}
-        result_dict = quota_payload if isinstance(quota_payload, dict) else {}
-        max_space = int(float(
-            storage.get("limit")
-            or storage.get("max_space")
-            or storage.get("maxSpace")
-            or result_dict.get("max_space", 0)
-            or result_dict.get("space_max", 0)
-            or 0
-        ))
-        used_space = int(float(
-            storage.get("used")
-            or storage.get("used_space")
-            or storage.get("usedSpace")
-            or result_dict.get("used_space", 0)
-            or result_dict.get("space_used", 0)
-            or 0
-        ))
-        remaining_space = max(0, max_space - used_space)
-    except (SeedrError, TypeError, ValueError, AttributeError) as exc:
-        logger.warning("Seedr selected-file quota check failed: %s", exc)
-        raise HTTPException(
-            503,
-            "Seedr account storage information is temporarily unavailable. Selective transfer was not started.",
-        ) from exc
-
-    if max_space <= 0 or used_space < 0 or used_space > max_space:
-        raise HTTPException(
-            503,
-            "Seedr account storage information is temporarily unavailable. Selective transfer was not started.",
-        )
-
-    if selected_size > remaining_space:
-        raise SeedrError(
-            "SEEDR_QUOTA_UNAVAILABLE",
-            413,
-            f"Selected files require {selected_size} bytes, but Seedr has only {remaining_space} bytes remaining.",
-        )
-
-    task = await add_task(magnet, int(folder))
-    created = True
-
-    task = unwrap_seedr_task(task)
-    tid = task_id(task)
-    if not tid:
-        raise HTTPException(502, "Seedr did not return a task id")
-
-    # Selective transfer is unsafe unless the new task can be paused before
-    # the first unwanted-file write. Never continue on a pause failure.
-    paused = False
-    pause_error: str | None = None
-    if created:
-        try:
-            await seedr_request(f"/tasks/{quote(tid)}/pause", "POST")
-            paused = True
-        except (HTTPException, SeedrError) as exc:
-            pause_error = (
-                exc.detail if isinstance(exc, SeedrError)
-                else str(exc.detail)
-            )
-            cleanup_error = ""
-            try:
-                await seedr_request(f"/tasks/{quote(tid)}", "DELETE")
-            except (HTTPException, SeedrError) as cleanup_exc:
-                cleanup_error = (
-                    cleanup_exc.detail
-                    if isinstance(cleanup_exc, SeedrError)
-                    else str(cleanup_exc.detail)
-                )
-            detail = (
-                "Seedr could not pause the new task, so selective transfer was not started. "
-                "The temporary task was removed."
-            )
-            if cleanup_error:
-                detail += " Automatic task cleanup also failed; please remove the new task from Seedr."
-            logger.warning(
-                "Seedr selected-file pause failed: task=%s status=%s error=%s cleanup=%s",
-                tid,
-                getattr(exc, "status_code", 0),
-                pause_error,
-                cleanup_error or "ok",
-            )
-            raise HTTPException(503, detail)
-
-    verification: list[int] = []
-    write_errors: list[str] = []
-    accepted_bitmap: str | None = None
-    accepted_bit_order: str | None = None
-
-    for msb_first in (False, True):
-        unwanted_b64 = build_seedr_unwanted(len(ordered_indexes), unwanted_positions, msb_first)
-        try:
-            await seedr_request(
-                f"/tasks/{quote(tid)}/unwanted",
-                "POST",
-                {"unwanted": unwanted_b64},
-            )
-            verify_payload = await seedr_request(f"/tasks/{quote(tid)}/unwanted")
-            actual = decode_seedr_unwanted(verify_payload, len(ordered_indexes), msb_first)
-            # Map logical metadata indexes to the ordered file positions before comparison.
-            expected_positions = [
-                position
-                for position, metadata_index in enumerate(ordered_indexes)
-                if position in unwanted_positions
-            ]
-            if actual == expected_positions:
-                accepted_bitmap = unwanted_b64
-                verification = [
-                    ordered_indexes[position]
-                    for position in actual
-                    if 0 <= position < len(ordered_indexes)
-                ]
-                accepted_bit_order = "msb" if msb_first else "lsb"
-                break
-            write_errors.append(
-                f"{'MSB' if msb_first else 'LSB'} bitmap verification mismatch: got {actual}, expected {expected_positions}"
-            )
-        except (HTTPException, SeedrError) as exc:
-            detail = (
-                exc.detail if isinstance(exc, SeedrError)
-                else str(exc.detail)
-            )
-            write_errors.append(
-                f"{'MSB' if msb_first else 'LSB'} bitmap write failed: {detail}"
-            )
-
-    # A failed bitmap write must never be turned into a 200 response. Otherwise
-    # the caller could believe the subset was selected while Seedr downloads the
-    # entire task. Since this route creates the task above, remove it while it is
-    # still paused and refuse to resume it.
-    if accepted_bitmap is None:
-        cleanup_error = ""
-        try:
-            await seedr_request(f"/tasks/{quote(tid)}", "DELETE")
-        except (HTTPException, SeedrError) as cleanup_exc:
-            cleanup_error = (
-                cleanup_exc.detail
-                if isinstance(cleanup_exc, SeedrError)
-                else str(cleanup_exc.detail)
-            )
-        detail = (
-            "Seedr did not accept and verify the selected-file bitmap. "
-            "The temporary task was not resumed."
-        )
-        if cleanup_error:
-            detail += " Automatic task cleanup failed; please remove the temporary task from Seedr."
-        logger.warning(
-            "Seedr selected-file bitmap failed: task=%s errors=%s cleanup=%s",
-            tid,
-            " | ".join(write_errors),
-            cleanup_error or "ok",
-        )
-        raise HTTPException(502, detail)
-
-    resume_error: str | None = None
-    if paused:
-        try:
-            await seedr_request(f"/tasks/{quote(tid)}/resume", "POST")
-        except (HTTPException, SeedrError) as exc:
-            resume_error = (
-                exc.detail if isinstance(exc, SeedrError)
-                else str(exc.detail)
-            )
-            logger.warning(
-                "Seedr selected-file resume failed: task=%s status=%s error=%s",
-                tid,
-                getattr(exc, "status_code", 0),
-                resume_error,
-            )
-
-    torrent_name = str(body.get("torrentName") or "").strip() or seedr_task_name(task) or f"Torrent {tid}"
-    task_folder_id = seedr_task_folder_id(task)
-    if created:
-        schedule_seedr_cleanup(tid, torrent_name, task_folder_id)
-
-    logger.info(
-        "Seedr selected-file result: task=%s created=%s selected=%s/%s accepted=%s bit_order=%s",
-        tid,
-        created,
-        selected_size,
-        total_size,
-        accepted_bitmap is not None,
-        accepted_bit_order or "none",
-    )
-
-    return {
-        "backend": "seedr",
-        "taskId": int(tid) if tid.isdigit() else tid,
-        "created": created,
-        "torrentName": torrent_name,
-        "folderId": task_folder_id or None,
-        "selectedIndexes": sorted(selected_set),
-        "selectedSize": selected_size,
-        "totalSize": total_size,
-        "unwanted": accepted_bitmap,
-        "writeAccepted": accepted_bitmap is not None,
-        "acceptedBitOrder": accepted_bit_order,
-        "writeError": None if accepted_bitmap is not None else ("; ".join(write_errors) or "Seedr did not preserve the requested file selection"),
-        "verifiedUnwanted": verification,
-        "pauseApplied": paused,
-        "pauseError": pause_error,
-        "resumeError": resume_error,
-    }
-
-
 @app.post("/api/seedr/add")
 async def seedr_add(body: MagnetRequest):
     if not SEEDR_TOKEN:
@@ -3187,6 +2770,48 @@ async def seedr_add(body: MagnetRequest):
     h = info_hash(magnet)
     if not h:
         raise HTTPException(400, "A valid BTIH magnet link is required")
+
+    # Seedr transfers the complete torrent. File selection cannot reduce the
+    # storage required by a Seedr transfer, so preflight the COMPLETE torrent
+    # size when the metadata-first frontend supplies it.
+    requested_size = int(float(body.size or 0))
+    if requested_size > 0:
+        try:
+            quota_result = seedr_data(await seedr_request("/user"))
+            storage = quota_result.get("account", {}).get("storage", {}) if isinstance(quota_result, dict) else {}
+            if not isinstance(storage, dict):
+                storage = quota_result.get("storage", {}) if isinstance(quota_result, dict) else {}
+            max_space = int(float(
+                storage.get("limit")
+                or storage.get("max_space")
+                or storage.get("maxSpace")
+                or (quota_result.get("max_space", 0) if isinstance(quota_result, dict) else 0)
+                or (quota_result.get("space_max", 0) if isinstance(quota_result, dict) else 0)
+                or 0
+            ))
+            used_space = int(float(
+                storage.get("used")
+                or storage.get("used_space")
+                or storage.get("usedSpace")
+                or (quota_result.get("used_space", 0) if isinstance(quota_result, dict) else 0)
+                or (quota_result.get("space_used", 0) if isinstance(quota_result, dict) else 0)
+                or 0
+            ))
+            if max_space <= 0 or used_space < 0 or used_space > max_space:
+                raise ValueError("invalid Seedr quota")
+            remaining_space = max(0, max_space - used_space)
+        except (SeedrError, TypeError, ValueError, AttributeError) as exc:
+            raise HTTPException(
+                503,
+                "Seedr account storage information is temporarily unavailable. The torrent was not submitted."
+            ) from exc
+
+        if requested_size > remaining_space:
+            raise SeedrError(
+                "SEEDR_INSUFFICIENT_SPACE",
+                413,
+                f"This torrent requires {requested_size} bytes, but Seedr has only {remaining_space} bytes remaining. Seedr cannot receive only selected files from a torrent."
+            )
 
     # Fast path: add directly to Seedr. The previous implementation scanned
     # all existing tasks and inspected folders before every add, which added
