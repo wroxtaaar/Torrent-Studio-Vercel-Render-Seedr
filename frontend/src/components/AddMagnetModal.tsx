@@ -546,20 +546,19 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       setError('');
       setSeedrSelectionTestResult(null);
 
-      const magnet = await resolveMagnetUri();
       const quota = await api.getSeedrQuota();
-
       if (!quota.configured) {
         throw new Error('Seedr is not configured.');
       }
-      if (totalTorrentSize > quota.remainingSpace) {
-        throw new Error(
-          `Use a small test torrent that fits Seedr's current free space. This torrent is ${formatBytes(totalTorrentSize)}, while Seedr has ${formatQuotaBytes(quota.remainingSpace)} free.`
-        );
+      if (selectedCount === 0) {
+        throw new Error('Select at least one file before testing Seedr selection.');
       }
 
-      const result = await api.inspectSeedrSelection(
+      const magnet = await resolveMagnetUri();
+      const result = await api.addSelectedSeedrFiles(
         magnet,
+        inspectedFiles.map(f => ({ index: f.index, name: f.name, size: f.size })),
+        selectedFiles.map(f => f.index),
         inspectedTorrentName || undefined
       );
 
@@ -568,6 +567,12 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         created: Boolean(result.created),
         unwanted: result.unwanted
       });
+
+      setInspectionSource(
+        result.writeAccepted
+          ? `✓ Seedr accepted the selected-file bitmap. Selected ${formatBytes(totalSelectedSize)} of ${formatBytes(totalTorrentSize)}.`
+          : `Seedr task was created, but the selection write failed: ${result.writeError || 'unknown error'}`
+      );
     } catch (err: any) {
       setError(err?.message || 'Could not test Seedr selective-download support.');
     } finally {
@@ -636,13 +641,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       priority: f.selected ? 1 : 0
     }));
 
-    if (selectionReason) {
-      setError(
-        'Seedr cannot transfer only selected files from a torrent. Free enough Seedr space for the full torrent, then add it again.'
-      );
-      return;
-    }
-
     try {
       setIsLoading(true);
       setError('');
@@ -656,8 +654,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         if (
           quota.configured &&
           totalSelectedSize > 0 &&
-          totalSelectedSize < quota.remainingSpace &&
-          totalSelectedSize >= totalTorrentSize
+          totalSelectedSize <= quota.remainingSpace
         ) {
           selectedBackend = 'seedr';
         }
