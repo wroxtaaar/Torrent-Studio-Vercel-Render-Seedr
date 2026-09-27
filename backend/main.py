@@ -9,6 +9,7 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlsplit
