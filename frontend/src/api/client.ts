@@ -253,6 +253,40 @@ export const api = {
     };
   },
 
+  async getTorrentMetadataJobs(): Promise<{
+    jobs: Array<{
+      jobId: string;
+      hash: string;
+      name: string;
+      status: string;
+      rounds: number;
+      startedAt: number;
+      updatedAt: number;
+      deadlineAt: number;
+      elapsedSeconds: number;
+      remainingSeconds: number;
+      fileCount: number;
+      totalSize: number;
+      source: string;
+      error?: string | null;
+    }>;
+    backgroundTtlSeconds: number;
+    retentionSeconds: number;
+  }> {
+    const res = await apiFetch('/api/v2/torrents/metadata-jobs');
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || body || 'Torrent metadata jobs request failed');
+    }
+    return {
+      jobs: Array.isArray(data?.jobs) ? data.jobs : [],
+      backgroundTtlSeconds: Number(data?.backgroundTtlSeconds || 0),
+      retentionSeconds: Number(data?.retentionSeconds || 0),
+    };
+  },
+
   async getTorrentMetadataStatus(jobId: string): Promise<any> {
     const res = await apiFetch(
       '/api/v2/torrents/inspect-magnet/status?jobId=' + encodeURIComponent(jobId)
