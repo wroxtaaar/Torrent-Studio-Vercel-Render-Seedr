@@ -1,3 +1,1792 @@
+/**
+ * SeedFlow - Cloud Torrent & Media Streaming Application
+ * Seedr-style webapp with qBittorrent WebAPI v2 orchestration,
+ * unlimited server storage, HTTP range streaming, and selective downloads.
+ */
+
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import {
+  Cloud,
+  Download,
+  Copy,
+  Upload,
+  HardDrive,
+  Folder,
+  File,
+  FolderPlus,
+  Play,
+  Share2,
+  History,
+  Settings,
+  Bell,
+  Plus,
+  Search,
+  Filter,
+  Moon,
+  Sun,
+  ShieldCheck,
+  AlertTriangle,
+  RefreshCw,
+  Trash2,
+  Users,
+  ChevronRight,
+  Sparkles,
+  Layers,
+  ArrowUpDown,
+  ExternalLink,
+  Film,
+  Music,
+  CheckCircle2
+} from 'lucide-react';
+
+import {
+  TorrentItem,
+  StorageFile,
+  StorageFolder,
+  UserProfile,
+  StorageStats,
+  ActivityLog,
+  AppNotification,
+  CleanupSettings,
+  UserPermission
+} from './types/index.ts';
+
+import { api } from './api/client.ts';
+import { formatBytes, formatQuotaBytes, formatSpeed } from './utils/formatters.ts';
+import { dispatchBrowserNotification, playNotificationSound } from './utils/notifications.ts';
+
+import { TorrentCard } from './components/TorrentCard.tsx';
+import { FileCard } from './components/FileCard.tsx';
+import { MediaPlayerModal } from './components/MediaPlayerModal.tsx';
+import { AddMagnetModal } from './components/AddMagnetModal.tsx';
+import { FilePrioModal } from './components/FilePrioModal.tsx';
+import { StorageCleanupModal } from './components/StorageCleanupModal.tsx';
+import { FolderShareModal } from './components/FolderShareModal.tsx';
+import { NotificationCenter } from './components/NotificationCenter.tsx';
+import { ActivityLogView } from './components/ActivityLogView.tsx';
+import { CreateFolderModal } from './components/CreateFolderModal.tsx';
+import { MoveFileModal } from './components/MoveFileModal.tsx';
+import { RenameModal } from './components/RenameModal.tsx';
+import { ConfirmDeleteModal } from './components/ConfirmDeleteModal.tsx';
+import { TorrentSearchPanel } from './components/TorrentSearchPanel.tsx';
+
+export default function App() {
+  // Navigation & Theme
+  const [activeTab, setActiveTab] = useState<'search' | 'files' | 'shared' | 'activity' | 'storage'>(() => {
+    try {
+      const saved = window.localStorage.getItem('seedflow_active_tab');
+      return saved === 'search' || saved === 'files' || saved === 'shared' || saved === 'activity' || saved === 'storage'
+        ? saved
+        : 'search';
+    } catch {
+      return 'search';
+    }
+  });
+  const [theme, setTheme] = useState<'dark' | 'dim' | 'light'>(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+  return (localStorage.getItem('seedflow_theme') as any) || 'dark';
+      }
+    } catch {
+      // Sandboxed or iframe storage restricted
+    }
+    return 'dark';
+  });
+
+  // Core Data
+  const [torrents, setTorrents] = useState<TorrentItem[]>([]);
+  const [files, setFiles] = useState<StorageFile[]>([]);
+  const [folders, setFolders] = useState<StorageFolder[]>([]);
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [activeUser, setActiveUser] = useState<UserProfile | null>(null);
+  const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
+  const activityStorageKey = 'seedflow_activity_logs';
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(activityStorageKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [cleanupSettings, setCleanupSettings] = useState<CleanupSettings | null>(null);
+  type SeedrNotice = {
+    taskId: number | string | null;
+    name: string;
+    folderName: string;
+    folderId: string;
+    status: 'waiting' | 'downloading' | 'completed' | 'not_found';
+    progress: number;
+    downloadUrl: string | null;
+    files: Array<{
+      id: string;
+      name: string;
+      size: number;
+      folderId: string;
+      folderPath: string;
+      url: string | null;
+      available?: boolean;
+    }>;
+    seedrReply: string;
+  };
+
+  const seedrNoticeStorageKey = 'seedflow_seedr_notice';
+  const [seedrNotice, setSeedrNotice] = useState<SeedrNotice | null>(() => {
+    try {
+      const raw = window.localStorage.getItem(seedrNoticeStorageKey);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.taskId == null) return null;
+      return {
+        taskId: parsed.taskId,
+        name: String(parsed.name || 'Seedr download'),
+        folderName: String(parsed.folderName || ''),
+        folderId: String(parsed.folderId || ''),
+        status: parsed.status === 'completed' ? 'completed' : parsed.status === 'downloading' ? 'downloading' : 'waiting',
+        progress: Math.max(0, Math.min(100, Number(parsed.progress) || 0)),
+        downloadUrl: typeof parsed.downloadUrl === 'string' ? parsed.downloadUrl : null,
+        files: Array.isArray(parsed.files) ? parsed.files : [],
+        seedrReply: String(parsed.seedrReply || ''),
+      };
+    } catch {
+      return null;
+    }
+  });
+  const [seedrFiles, setSeedrFiles] = useState<Array<{ id: string; streamId?: string; name: string; size: number; folderId: string; folderPath: string }>>([]);
+  const [seedrLibraryRoot, setSeedrLibraryRoot] = useState<{
+    id: string;
+    folderId: string;
+    name: string;
+    path: string;
+    filesCount: number;
+    totalSize: number;
+    folderCount: number;
+  } | null>(null);
+  const [seedrLibraryFolders, setSeedrLibraryFolders] = useState<Array<{
+    id: string;
+    folderId: string;
+    name: string;
+    path: string;
+    filesCount: number;
+    totalSize: number;
+    folderCount: number;
+    active?: boolean;
+    progress?: number;
+  }>>([]);
+  const [seedrFolderContentsLoading, setSeedrFolderContentsLoading] = useState(false);
+  const [seedrPrefetchLoading, setSeedrPrefetchLoading] = useState(false);
+  const [seedrFolderContentsCache, setSeedrFolderContentsCache] = useState<Record<string, Array<{
+    id: string;
+    streamId?: string;
+    name: string;
+    size: number;
+    folderId: string;
+    folderPath: string;
+  }>>>({});
+  const [seedrConfigured, setSeedrConfigured] = useState(false);
+  const [seedrQuota, setSeedrQuota] = useState<{ maxSpace: number; usedSpace: number; remainingSpace: number } | null>(null);
+  const [seedrLoading, setSeedrLoading] = useState(false);
+  const [seedrError, setSeedrError] = useState<string | null>(null);
+  const [seedrDeleteNotice, setSeedrDeleteNotice] = useState<string | null>(null);
+  const [copiedSeedrFileId, setCopiedSeedrFileId] = useState<string | null>(null);
+  const [seedrAddBlockedNotice, setSeedrAddBlockedNotice] = useState<string | null>(null);
+  const [seedrSelectionContext, setSeedrSelectionContext] = useState<{
+    remainingSpace: number;
+    torrentSize: number;
+    torrentName: string;
+  } | null>(null);
+  const [isCancellingSeedr, setIsCancellingSeedr] = useState(false);
+  const [activeSeedrFolderOpen, setActiveSeedrFolderOpen] = useState(false);
+  const [selectedSeedrFolderId, setSelectedSeedrFolderId] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem('seedflow_seedr_folder') || null;
+    } catch {
+      return null;
+    }
+  });
+  const seedrTorrentNamesKey = 'seedflow_seedr_torrent_names';
+  const [seedrTorrentNames, setSeedrTorrentNames] = useState<Record<string, string>>(() => {
+    try {
+      const raw = window.localStorage.getItem(seedrTorrentNamesKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const rememberSeedrTorrentName = useCallback((folderId: string, torrentName: string) => {
+    const id = String(folderId || '').trim();
+    const name = String(torrentName || '').trim();
+    if (!id || !name || name === 'Waiting for Seedr metadata…') return;
+
+    setSeedrTorrentNames(prev => {
+      const next = { ...prev, [id]: name };
+      try {
+        window.localStorage.setItem(seedrTorrentNamesKey, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const toSeedrStorageFile = useCallback((file: {
+    id: string;
+    streamId?: string;
+    name: string;
+    size: number;
+    folderId: string;
+    folderPath: string;
+  }): StorageFile => {
+    const lower = file.name.toLowerCase();
+    const type: StorageFile['type'] =
+      /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts)$/i.test(lower) ? 'video' :
+      /\.(mp3|wav|flac|aac|ogg|m4a)$/i.test(lower) ? 'audio' :
+      /\.(zip|rar|7z|tar|gz|bz2)$/i.test(lower) ? 'archive' :
+      /\.(pdf|txt|doc|docx|xls|xlsx|ppt|pptx|csv)$/i.test(lower) ? 'document' :
+      'other';
+
+    return {
+      id: file.id,
+      name: file.name,
+      path: (file.folderPath || '/Torrent Studio').replace(/\/$/, '') + '/' + file.name,
+      folder: file.folderPath || '/Torrent Studio',
+      size: Number(file.size) || 0,
+      type,
+      mimeType: type === 'video' ? 'video/mp4' : type === 'audio' ? 'audio/mpeg' : 'application/octet-stream',
+      createdAt: Date.now(),
+      ownerId: 'seedr',
+      ownerName: 'Seedr',
+      isStreamable: type === 'video' || type === 'audio',
+      downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
+      streamUrl: type === 'video' || type === 'audio'
+        ? '/api/seedr/files/stream?file_id=' + encodeURIComponent(file.streamId || file.id) + '&name=' + encodeURIComponent(file.name) + '&type=' + encodeURIComponent(type)
+        : '',
+    };
+  }, []);
+
+  const seedrAllPrefetchedFiles = useMemo(
+    () => Object.values(seedrFolderContentsCache).flat(),
+    [seedrFolderContentsCache]
+  );
+
+  // Active Seedr transfers are shown only in the transfer card above.
+  // The initial response contains folder metadata only; file rows are loaded
+  // lazily after a folder is opened.
+  const seedrFolderGroups = useMemo(() => {
+    type SeedrFolderGroup = {
+      folderId: string;
+      name: string;
+      path: string;
+      files: Array<{ id: string; name: string; size: number; folderId: string; folderPath: string }>;
+      totalSize: number;
+      filesCount: number;
+      active?: boolean;
+      progress?: number;
+    };
+
+    const groups: SeedrFolderGroup[] = seedrLibraryFolders.map(folder => {
+      const folderId = folder.folderId || folder.id;
+      const savedTorrentName = seedrTorrentNames[folderId];
+      const torrentName = String(folder.torrentName || savedTorrentName || '').trim();
+      return {
+      folderId,
+      name: torrentName || folder.name,
+      path: folder.path,
+      files: [],
+      totalSize: Number(folder.totalSize) || 0,
+      filesCount: Number(folder.filesCount) || 0,
+      active: false,
+      progress: undefined,
+      };
+    });
+
+    if (seedrNotice?.taskId != null && seedrNotice.status !== 'completed') {
+      const normalizeSeedrText = (value: string) =>
+        value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+      const actualFolderId =
+        seedrNotice.folderId?.trim() ||
+        seedrNotice.files.find(file => file.folderId && !file.folderId.startsWith('__'))?.folderId ||
+        '';
+
+      const activeName =
+        seedrNotice.name?.trim() ||
+        'Seedr download';
+
+      const activeNameKey = normalizeSeedrText(activeName);
+      let matchingEntry = actualFolderId
+        ? groups.find(group => group.folderId === actualFolderId)
+        : undefined;
+
+      if (!matchingEntry) {
+        matchingEntry = groups.find(group =>
+          normalizeSeedrText(group.name) === activeNameKey ||
+          normalizeSeedrText(group.path.split('/').filter(Boolean).pop() || '') === activeNameKey
+        );
+      }
+
+      const activeFileSize = (seedrNotice.files || []).reduce((sum, file) => sum + Number(file.size || 0), 0);
+      const activeFileCount = seedrNotice.files?.length || 0;
+
+      if (matchingEntry) {
+        matchingEntry.active = true;
+        matchingEntry.progress = Math.max(0, Math.min(100, Number(seedrNotice.progress) || 0));
+        matchingEntry.name = activeName || matchingEntry.name;
+        if (actualFolderId) matchingEntry.folderId = actualFolderId;
+        if (activeFileCount > 0 && matchingEntry.filesCount === 0) matchingEntry.filesCount = activeFileCount;
+        if (activeFileSize > 0 && matchingEntry.totalSize === 0) matchingEntry.totalSize = activeFileSize;
+      } else {
+        groups.unshift({
+          folderId: actualFolderId || '__active_seedr__',
+          name: activeName,
+          path: '/Torrent Studio/' + activeName,
+          files: [],
+          totalSize: activeFileSize,
+          filesCount: activeFileCount,
+          active: true,
+          progress: Math.max(0, Math.min(100, Number(seedrNotice.progress) || 0)),
+        });
+      }
+    }
+
+    return groups.sort((a, b) => {
+      if (a.active && !b.active) return -1;
+      if (!a.active && b.active) return 1;
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  }, [seedrLibraryFolders, seedrNotice, seedrTorrentNames]);
+
+  useEffect(() => {
+    if (
+      selectedSeedrFolderId !== null &&
+      seedrLibraryFolders.length > 0 &&
+      !seedrFolderGroups.some(folder => folder.folderId === selectedSeedrFolderId)
+    ) {
+      setSelectedSeedrFolderId(null);
+      setSeedrFiles([]);
+    }
+  }, [selectedSeedrFolderId, seedrLibraryFolders.length, seedrFolderGroups]);
+
+  // File Explorer State
+  const [currentFolder, setCurrentFolder] = useState<string>('/');
+  const [fileSearch, setFileSearch] = useState<string>('');
+  const [fileTypeFilter, setFileTypeFilter] = useState<string>('all');
+  const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+
+  // The Files tab is reserved for completed/stored files and folders.
+  // Active qBittorrent downloads belong only in the Transfers tab.
+  const visibleFiles = currentFolder === '/' && seedrAllPrefetchedFiles.length > 0
+    ? seedrAllPrefetchedFiles.map(toSeedrStorageFile)
+    : files;
+  // Modals & Drawers
+  const [isAddMagnetOpen, setIsAddMagnetOpen] = useState(false);
+  const [initialMagnet, setInitialMagnet] = useState('');
+  const [prioTorrent, setPrioTorrent] = useState<TorrentItem | null>(null);
+  const [isCleanupOpen, setIsCleanupOpen] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
+  const [shareFolder, setShareFolder] = useState<StorageFolder | null>(null);
+  const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
+  const [moveFile, setMoveFile] = useState<StorageFile | null>(null);
+  const [renameItem, setRenameItem] = useState<{ id: string; name: string; isFolder: boolean } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    type: 'file' | 'torrent';
+    id: string;
+    name: string;
+    details?: string;
+  } | null>(null);
+
+  // Media Player State
+  const [activeMediaFile, setActiveMediaFile] = useState<StorageFile | null>(null);
+  const [isPlayerMinimized, setIsPlayerMinimized] = useState(false);
+
+  // Previous torrent hashes for completion tracking
+  const prevTorrentStates = useRef<Record<string, string>>({});
+
+  // qBittorrent applies stop/start asynchronously. Keep an optimistic transfer
+  // state visible for a short reconciliation window so the 1.8s polling loop
+  // cannot immediately overwrite a user's pause/resume click with stale state.
+  const pendingTransferStates = useRef<Record<string, { state: 'pausedDL' | 'downloading'; expiresAt: number }>>({});
+
+  // Persist navigation so a browser refresh returns to the same page.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('seedflow_active_tab', activeTab);
+    } catch {
+      // Storage may be unavailable in restricted browser contexts.
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    try {
+      if (selectedSeedrFolderId) {
+        window.localStorage.setItem('seedflow_seedr_folder', selectedSeedrFolderId);
+      } else {
+        window.localStorage.removeItem('seedflow_seedr_folder');
+      }
+    } catch {
+      // Storage may be unavailable in restricted browser contexts.
+    }
+  }, [selectedSeedrFolderId]);
+
+  // Theme synchronization
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.setItem('seedflow_theme', theme);
+      }
+    } catch {}
+    try {
+      const root = document.documentElement;
+      root.classList.remove('dark', 'dim', 'light');
+      if (theme === 'dark') {
+        root.classList.add('dark');
+        root.style.backgroundColor = '#020617';
+      } else if (theme === 'dim') {
+        root.classList.add('dark');
+        root.style.backgroundColor = '#0f172a';
+      } else {
+        root.classList.add('light');
+        root.style.backgroundColor = '#f8fafc';
+      }
+    } catch {}
+  }, [theme]);
+
+  const seedrDownloadActive = Boolean(
+    seedrNotice?.taskId != null && seedrNotice.status !== 'completed'
+  );
+
+  const openAddMagnet = useCallback((source = '') => {
+    if (seedrDownloadActive) {
+      setSeedrAddBlockedNotice(
+        'A Seedr download is already in progress. Free Seedr accounts allow one parallel download. Wait for it to finish before adding another magnet link.'
+      );
+      setActiveTab('files');
+      window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
+      return;
+    }
+
+    setInitialMagnet(source);
+    setIsAddMagnetOpen(true);
+  }, [seedrDownloadActive]);
+
+  // Load lightweight application metadata first. The actual files for the
+  // currently open folder are fetched separately, after folder metadata exists.
+  const loadInitialData = useCallback(async () => {
+    try {
+      const [uData, sStats, foldData, logs, notifs, cleanup] = await Promise.all([
+        api.getUsers(),
+        api.getStorageStats(),
+        api.getFolders(),
+        api.getLogs(),
+        api.getNotifications(),
+        api.getCleanupSettings()
+      ]);
+
+      setUsers(uData.users);
+      setActiveUser(uData.activeUser);
+      setStorageStats(sStats);
+      setFolders(foldData);
+      try {
+        const rawLocalLogs = window.localStorage.getItem(activityStorageKey);
+        const localLogs = rawLocalLogs ? JSON.parse(rawLocalLogs) : [];
+        setActivityLogs(Array.isArray(localLogs) && localLogs.length ? localLogs : logs);
+      } catch {
+        setActivityLogs(logs);
+      }
+      setNotifications(notifs);
+      setCleanupSettings(cleanup);
+    } catch (e) {
+      console.error('Failed to load initial seedflow metadata:', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadInitialData();
+  }, [loadInitialData]);
+
+  const loadCurrentFiles = useCallback(async () => {
+    try {
+      const folderId = currentFolder === '/'
+        ? ''
+        : String(folders.find(folder => folder.path === currentFolder)?.id || '');
+      const fData = await api.getFiles(currentFolder, fileSearch, fileTypeFilter, folderId);
+      setFiles(fData);
+    } catch (e) {
+      console.error('Failed to load current folder files:', e);
+      setFiles([]);
+    }
+  }, [currentFolder, fileSearch, fileTypeFilter, folders]);
+
+  useEffect(() => {
+    if (activeTab === 'files') {
+      loadCurrentFiles();
+    }
+  }, [activeTab, loadCurrentFiles]);
+
+  const loadSeedrLibrary = useCallback(async () => {
+    setSeedrLoading(true);
+    setSeedrError(null);
+
+    try {
+      // Refresh the active transfer progress independently of library
+      // metadata. This request is intentionally tiny, so the progress bar can
+      // move immediately instead of waiting for the library tree.
+      const activeTaskId = seedrNotice?.taskId;
+      if (activeTaskId && seedrNotice?.status !== 'completed') {
+        void api.getSeedrTaskProgress(activeTaskId).then(progressResult => {
+          if (progressResult.status === 'not_found') return;
+          const progress = Math.max(0, Math.min(100, Number(progressResult.progress) || 0));
+          const progressName = String(progressResult.name || '').trim();
+          const progressFolderId = String(progressResult.folderId || '').trim();
+          setSeedrNotice(prev => {
+            if (!prev) return null;
+
+            const canonicalName = String(prev.name || '').trim() || progressName;
+            if (
+              progressFolderId &&
+              canonicalName &&
+              canonicalName !== 'Waiting for torrent name…' &&
+              canonicalName !== 'Waiting for Seedr metadata…'
+            ) {
+              rememberSeedrTorrentName(progressFolderId, canonicalName);
+            }
+
+            return {
+              ...prev,
+              name: canonicalName,
+              folderId: progressFolderId || prev.folderId || '',
+              status: progressResult.status,
+              progress,
+            };
+          });
+        }).catch(() => {
+          // The normal task poll continues to provide progress updates.
+        });
+      }
+
+      // Stage 1 — only the metadata required to paint the outer Seedr
+      // Library immediately. Do not wait for quota or file rows.
+      const result = await api.getSeedrLibrary();
+
+      setSeedrConfigured(result.configured);
+      setSeedrLibraryRoot(result.root);
+      setSeedrLibraryFolders(result.folders);
+      setSeedrLoading(false);
+
+      // Stage 2 — start all internal/detail requests automatically, in the
+      // background, immediately after stage 1 completes.
+      setSeedrPrefetchLoading(result.folders.length > 0);
+
+      const validFolderKeys = new Set(
+        result.folders.map(folder => String(folder.folderId || folder.id))
+      );
+      setSeedrFolderContentsCache(prev =>
+        Object.fromEntries(
+          Object.entries(prev).filter(([key]) => validFolderKeys.has(key))
+        )
+      );
+
+      // Do not clear the existing file rows during refresh. React keeps the
+      // current visible component intact while fresh internal details arrive.
+      // The cache effect below swaps them in as soon as they are available.
+    } catch (error: any) {
+      setSeedrError(error?.message || 'Failed to refresh Seedr metadata');
+      setSeedrLoading(false);
+      setSeedrPrefetchLoading(false);
+      return null;
+    }
+
+    return result;
+  }, [rememberSeedrTorrentName]);
+
+  // Keep an opened folder synchronized with the background prefetch cache.
+  // Changing the selected folder no longer reruns the entire library request.
+  useEffect(() => {
+    if (!selectedSeedrFolderId) return;
+
+    const cached = seedrFolderContentsCache[selectedSeedrFolderId];
+    if (!cached) return;
+
+    setSeedrFiles(cached);
+    setSeedrFolderContentsLoading(false);
+  }, [selectedSeedrFolderId, seedrFolderContentsCache]);
+
+  const handleOpenSeedrFolder = useCallback(async (folderId: string) => {
+    if (!folderId || folderId === '__root__' || folderId === '__active_seedr__') return;
+    const folder = seedrFolderGroups.find(item => item.folderId === folderId);
+    const cached = seedrFolderContentsCache[folderId];
+
+    setSelectedSeedrFolderId(folderId);
+    setSeedrError(null);
+
+    // Prefetch normally makes this path instant. Fall back to a request only
+    // when the user clicks before that background request has completed.
+    if (cached) {
+      setSeedrFiles(cached);
+      setSeedrFolderContentsLoading(false);
+      return;
+    }
+
+    setSeedrFiles([]);
+    setSeedrFolderContentsLoading(true);
+
+    try {
+      const result = await api.getSeedrFolderContents(folderId);
+      const folderPath = folder?.path || '/Torrent Studio';
+      const mapped = result.files.map(file => ({
+        id: file.id,
+        streamId: file.streamId,
+        name: file.name,
+        size: Number(file.size) || 0,
+        folderId: file.folderId || folderId,
+        folderPath,
+      }));
+      setSeedrFolderContentsCache(prev => ({ ...prev, [folderId]: mapped }));
+      setSeedrFiles(mapped);
+    } catch (error: any) {
+      setSeedrError(error?.message || 'Failed to load Seedr folder contents');
+    } finally {
+      setSeedrFolderContentsLoading(false);
+    }
+  }, [seedrFolderGroups, seedrFolderContentsCache]);
+
+  useEffect(() => {
+    if (activeTab === 'files') loadSeedrLibrary();
+  }, [activeTab, loadSeedrLibrary]);
+
+
+  // Polling loop for active torrents, speeds, and push notifications
+  useEffect(() => {
+    let isMounted = true;
+
+    const pollTorrents = async () => {
+      try {
+        const torrentList = await api.getTorrents();
+        if (!isMounted) return;
+
+        // Check for completions to fire push notifications
+        torrentList.forEach(t => {
+          const prevState = prevTorrentStates.current[t.hash];
+          if (prevState === 'downloading' && (t.state === 'completed' || t.progress >= 1)) {
+            // Transfer finished! Trigger sound and push alert
+            playNotificationSound();
+            dispatchBrowserNotification(
+              `Download Finished: ${t.name}`,
+              `Direct streaming and direct download links are now ready in your cloud storage.`
+            );
+            // Refresh storage & files list
+            api.getFiles(currentFolder).then(setFiles).catch(console.error);
+            api.getStorageStats().then(setStorageStats).catch(console.error);
+            api.getNotifications().then(setNotifications).catch(console.error);
+          }
+          prevTorrentStates.current[t.hash] = t.state;
+        });
+
+        const now = Date.now();
+        const reconciledTorrentList = torrentList.map(t => {
+          const pending = pendingTransferStates.current[t.hash];
+          if (!pending) return t;
+
+          if (pending.expiresAt <= now) {
+            delete pendingTransferStates.current[t.hash];
+            return t;
+          }
+
+          if (pending.state === 'pausedDL') {
+            return { ...t, state: 'pausedDL', dlspeed: 0, eta: -1 };
+          }
+
+          return {
+            ...t,
+            state: 'downloading',
+            eta: t.eta < 0 ? 0 : t.eta
+          };
+        });
+
+        setTorrents(reconciledTorrentList);
+      } catch (e) {
+        console.error('Polling error:', e);
+      }
+    };
+
+    pollTorrents();
+    const interval = setInterval(pollTorrents, 1800);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [currentFolder]);
+
+  // Actions
+  const appendActivityLog = useCallback((log: ActivityLog) => {
+    setActivityLogs(prev => {
+      const next = [log, ...prev].slice(0, 100);
+      try {
+        window.localStorage.setItem(activityStorageKey, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const handleSearchAdd = async (source: string, size: number, title: string, infoHash?: string) => {
+    const trimmedSource = source.trim();
+    const seedrSource =
+      trimmedSource.toLowerCase().startsWith('magnet:?')
+        ? trimmedSource
+        : infoHash
+          ? `magnet:?xt=urn:btih:${infoHash.trim()}`
+          : '';
+
+    if (seedrDownloadActive) {
+      setSeedrAddBlockedNotice(
+        'A Seedr download is already in progress. Free Seedr accounts allow one parallel download. Wait for it to finish before adding another magnet link.'
+      );
+      setActiveTab('files');
+      window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
+      return;
+    }
+
+    // Always check Seedr's live quota before deciding whether a search
+    // result can be added directly. The general storage stats can be stale
+    // after another Seedr file is added/deleted.
+    if (seedrSource && Number(size) > 0) {
+      try {
+        const quota = await api.getSeedrQuota();
+        const remainingSpace = Number(quota.remainingSpace || 0);
+        const torrentSize = Number(size) || 0;
+
+        if (quota.configured && torrentSize > remainingSpace) {
+          setSeedrSelectionContext({
+            remainingSpace,
+            torrentSize,
+            torrentName: title,
+          });
+          setSeedrAddBlockedNotice(
+            `This torrent is ${formatBytes(torrentSize)} but Seedr has ${formatQuotaBytes(remainingSpace)} remaining. Review the files before continuing.`
+          );
+          openAddMagnet(seedrSource);
+          return;
+        }
+      } catch {
+        // Let the backend perform the authoritative quota check when the
+        // live quota endpoint is temporarily unavailable.
+      }
+
+      await handleAddMagnet(
+        seedrSource,
+        'Downloads',
+        undefined,
+        undefined,
+        undefined,
+        'seedr',
+        undefined,
+        undefined,
+        title
+      );
+      return;
+    }
+
+    // If the search result has no usable magnet/hash, keep the existing
+    // selector flow as the safe fallback.
+    openAddMagnet(source);
+  };
+
+  const handleAddMagnet = async (
+    magnet: string,
+    category: string,
+    selectedFiles?: number[],
+    manifest?: { name: string; size: number; priority: number }[],
+    existingHash?: string,
+    forceBackend?: 'seedr' | 'qbittorrent',
+    selectedNames?: string[],
+    seedrTaskId?: number | string,
+    torrentName?: string
+  ) => {
+    try {
+      if (seedrDownloadActive && forceBackend !== 'qbittorrent') {
+        const error = new Error(
+          'A Seedr download is already in progress. Free Seedr accounts allow one parallel download. Wait for it to finish before adding another magnet link.'
+        );
+        (error as any).code = 'SEEDR_PARALLEL_DOWNLOAD_LIMIT';
+        throw error;
+      }
+
+      const result = await api.addMagnet(
+        magnet,
+        category,
+        selectedFiles,
+        manifest,
+        existingHash,
+        forceBackend,
+        selectedNames,
+        seedrTaskId,
+        torrentName
+      );
+      if (result.backend === 'seedr') {
+        const initialTorrentName = String(torrentName || '').trim();
+        const returnedFolderId = String((result as any).seedrFolderId || (result as any).seedrResponse?.folder_id || '').trim();
+        if (returnedFolderId && initialTorrentName) {
+          rememberSeedrTorrentName(returnedFolderId, initialTorrentName);
+        }
+
+        setSeedrNotice({
+          taskId: result.seedrTaskId ?? null,
+          name: String(torrentName || '').trim() || (() => {
+            const response: any = result.seedrResponse;
+            const responseName = String(
+              response?.name ??
+              response?.task?.name ??
+              response?.title ??
+              ''
+            ).trim();
+            if (responseName) return responseName;
+
+            const selectedManifest = (manifest || []).filter(file => Number(file.priority || 0) > 0);
+            if (selectedManifest.length === 1) return selectedManifest[0].name;
+            if (selectedManifest.length > 1) {
+              return selectedManifest[0].name + ` + ${selectedManifest.length - 1} more`;
+            }
+
+            return 'Waiting for torrent name…';
+          })(),
+          folderName: '',
+          status: 'waiting',
+          progress: 0,
+          downloadUrl: null,
+          // Show the user's selected files immediately. Seedr can take a few
+          // seconds before its filesystem endpoint exposes the real entries.
+          files: (manifest || [])
+            .map((file, index) => ({ file, index }))
+            .filter(({ file }) => Number(file.priority || 0) > 0)
+            .map(({ file, index }) => ({
+              id: `pending-${result.seedrTaskId ?? 'task'}-${index}`,
+              name: file.name,
+              size: Number(file.size || 0),
+              folderId: '__pending__',
+              folderPath: '/Currently Downloading',
+              url: null,
+              available: false,
+            })),
+          seedrReply: (() => {
+            const response: any = result.seedrResponse;
+            const state = response?.state ?? response?.task?.state ?? response?.status ?? response?.task?.status;
+            return state ? `Seedr replied: ${String(state)}` : 'Seedr replied: task accepted';
+          })(),
+          selectionApplied: (result as any).selectionApplied,
+          selectionError: (result as any).selectionError,
+        });;
+      } else {
+        setSeedrNotice(null);
+      }
+      if (result.backend === 'seedr') {
+        const loggedName =
+          String(torrentName || '').trim() ||
+          String(result.seedrResponse?.name || result.seedrResponse?.task?.name || '').trim() ||
+          'Torrent';
+
+        const taskId = result.seedrTaskId ?? result.seedrResponse?.task_id ?? result.seedrResponse?.id ?? '';
+        const folderId = result.seedrFolderId ?? result.seedrResponse?.folder_id ?? result.seedrResponse?.task?.folder_id ?? '';
+
+        appendActivityLog({
+          id: `seedr-add-${taskId || Date.now()}-${Date.now()}`,
+          timestamp: Date.now(),
+          type: 'torrent',
+          userName: activeUser?.name || 'Seedr User',
+          userId: activeUser?.id || 'seedr-user',
+          action: 'Torrent added to Seedr',
+          details: `${loggedName}${taskId ? ` • Task ${taskId}` : ''}${folderId ? ` • Folder ${folderId}` : ''} • Auto-delete in 2 hours`,
+          status: 'success'
+        });
+      }
+
+      // The add response is the important operation. Refresh secondary UI
+      // state in the background so the Add button does not stay blocked on
+      // extra qBittorrent/Seedr requests.
+      void api.getTorrents()
+        .then(setTorrents)
+        .catch((refreshError) =>
+          console.warn('Torrent added, but transfers could not be refreshed yet:', refreshError)
+        );
+
+      void api.getStorageStats()
+        .then(setStorageStats)
+        .catch((refreshError) =>
+          console.warn('Torrent added, but storage stats could not be refreshed yet:', refreshError)
+        );
+
+      setActiveTab(result.backend === 'seedr' ? 'files' : 'transfers');
+    } catch (error: any) {
+      if (error?.code === 'SEEDR_INSUFFICIENT_SPACE') {
+        const required = Number(error.requiredBytes || 0);
+        const remaining = Number(error.remainingSpace || 0);
+        const message =
+          `Seedr does not have enough free space.\n\n` +
+          `Required: ${formatBytes(required)}\n` +
+          `Seedr remaining: ${formatBytes(remaining)}\n\n` +
+          `OK = use qBittorrent instead\nCancel = free some Seedr space and try again.`;
+        if (window.confirm(message)) {
+          await handleAddMagnet(magnet, category, selectedFiles, manifest, existingHash, 'qbittorrent');
+        }
+        return;
+      }
+      throw error;
+    }
+  };
+
+  useEffect(() => {
+    try {
+      if (seedrNotice?.taskId != null && seedrNotice.status !== 'completed') {
+        window.localStorage.setItem(seedrNoticeStorageKey, JSON.stringify(seedrNotice));
+      } else {
+        window.localStorage.removeItem(seedrNoticeStorageKey);
+      }
+    } catch {
+      // Local storage may be unavailable in restricted browser contexts.
+    }
+  }, [seedrNotice]);
+
+  // Completed Seedr notices are only a short-lived confirmation. Keep the
+  // transfer screen clean by removing the card automatically after 3 seconds.
+  useEffect(() => {
+    if (!seedrNotice?.taskId || seedrNotice.status !== 'completed') return;
+
+    const timeoutId = window.setTimeout(() => {
+      setSeedrNotice(null);
+    }, 8000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [seedrNotice?.taskId, seedrNotice?.status]);
+
+  useEffect(() => {
+    if (!seedrNotice?.taskId || seedrNotice.status === 'completed') return;
+
+    let active = true;
+    let timeoutId: number | null = null;
+
+    const scheduleNextPoll = (delayMs: number) => {
+      if (!active) return;
+      timeoutId = window.setTimeout(poll, delayMs);
+    };
+
+    const applyProgress = (result: {
+      status: 'waiting' | 'downloading' | 'completed' | 'not_found';
+      progress: number;
+      name?: string;
+      folderId?: string;
+    }) => {
+      const progress = Math.max(0, Math.min(100, Number(result.progress) || 0));
+      const completed = result.status === 'completed';
+
+      setSeedrNotice(prev => {
+        if (!prev) return null;
+
+        const canonicalName = String(prev.name || '').trim() || String(result.name || '').trim();
+        const resolvedFolderId = String(result.folderId || prev.folderId || '').trim();
+
+        if (
+          resolvedFolderId &&
+          canonicalName &&
+          canonicalName !== 'Waiting for torrent name…' &&
+          canonicalName !== 'Waiting for Seedr metadata…'
+        ) {
+          rememberSeedrTorrentName(resolvedFolderId, canonicalName);
+        }
+
+        return {
+          ...prev,
+          name: canonicalName,
+          folderId: resolvedFolderId,
+          status: completed ? 'completed' : result.status,
+          progress: completed ? 100 : progress,
+        };
+      });
+
+      return completed;
+    };
+
+    const poll = async () => {
+      if (!active) return;
+
+      try {
+        // This endpoint only asks Seedr for task state/progress, so it is much
+        // faster than loading task contents, folder names, and file URLs.
+        const progressResult = await api.getSeedrTaskProgress(seedrNotice.taskId!);
+        if (!active) return;
+
+        if (progressResult.status === 'not_found') {
+          setSeedrNotice(null);
+          setSeedrAddBlockedNotice(null);
+          try {
+            window.localStorage.removeItem(seedrNoticeStorageKey);
+          } catch {}
+          return;
+        }
+
+        const completed = applyProgress(progressResult);
+
+        if (!completed) {
+          // Poll frequently so the visible progress bar moves as soon as Seedr
+          // reports a newer value.
+          scheduleNextPoll(1000);
+          return;
+        }
+
+        // Only when complete do we make the heavier request for the final
+        // files/download URLs before promoting the task into the library.
+        const result = await api.getSeedrTask(seedrNotice.taskId!);
+        if (!active) return;
+
+        setSeedrNotice(prev => {
+          if (!prev) return null;
+
+          const resolvedFolderId = String(
+            (result as any).folderId ||
+            progressResult.folderId ||
+            prev.folderId ||
+            ''
+          ).trim();
+          const canonicalName = String(
+            prev.name ||
+            (result as any).name ||
+            progressResult.name ||
+            ''
+          ).trim();
+
+          if (
+            resolvedFolderId &&
+            canonicalName &&
+            canonicalName !== 'Waiting for torrent name…' &&
+            canonicalName !== 'Waiting for Seedr metadata…'
+          ) {
+            rememberSeedrTorrentName(resolvedFolderId, canonicalName);
+          }
+
+          return {
+            ...prev,
+            name: canonicalName,
+            folderName: '',
+            folderId: resolvedFolderId,
+            status: 'completed',
+            progress: 100,
+            downloadUrl: result.downloadUrl,
+            files: Array.isArray(result.files) && result.files.length > 0 ? result.files : prev.files,
+          };
+        });
+
+        const completedFolderId = String(
+          (result as any).folderId ||
+          progressResult.folderId ||
+          seedrNotice.folderId ||
+          ''
+        ).trim();
+
+        const refreshCompletedLibrary = async () => {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const refreshed = await loadSeedrLibrary();
+            const completedFolder = refreshed?.folders?.find(
+              folder => String(folder.folderId || folder.id) === completedFolderId
+            );
+
+            if (completedFolder) {
+              // Fetch the newly completed folder immediately so its file rows,
+              // stream IDs, sizes, and download actions are available without
+              // waiting for the rest of the library prefetch.
+              try {
+                const contents = await api.getSeedrFolderContents(completedFolderId);
+                const mapped = contents.files.map(file => ({
+                  id: file.id,
+                  streamId: file.streamId,
+                  name: file.name,
+                  size: Number(file.size) || 0,
+                  folderId: file.folderId || completedFolderId,
+                  folderPath: completedFolder.path,
+                }));
+
+                setSeedrFolderContentsCache(prev => ({
+                  ...prev,
+                  [completedFolderId]: mapped,
+                }));
+
+                if (selectedSeedrFolderId === completedFolderId) {
+                  setSeedrFiles(mapped);
+                  setSeedrFolderContentsLoading(false);
+                }
+              } catch (error) {
+                console.warn('Failed to load completed Seedr file details:', error);
+              }
+
+              break;
+            }
+
+            if (attempt < 2) {
+              await new Promise(resolve => window.setTimeout(resolve, 1000));
+            }
+          }
+        };
+
+        void refreshCompletedLibrary();
+        setActiveSeedrFolderOpen(false);
+      } catch {
+        scheduleNextPoll(2500);
+      }
+    };
+
+    void poll();
+
+    return () => {
+      active = false;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, [seedrNotice?.taskId, seedrNotice?.status, loadSeedrLibrary, rememberSeedrTorrentName]);
+
+  const handleCancelSeedrDownload = async () => {
+    const taskId = seedrNotice?.taskId;
+    if (taskId == null || isCancellingSeedr) return;
+
+    const currentNotice = seedrNotice;
+    try {
+      setIsCancellingSeedr(true);
+      await api.deleteSeedrTask(taskId);
+      setSeedrNotice(null);
+    } catch (error: any) {
+      console.error('Failed to cancel Seedr download:', error);
+      setSeedrNotice(currentNotice);
+      setSeedrAddBlockedNotice(
+        error?.message || 'Failed to cancel the Seedr download. Please try again.'
+      );
+      window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
+    } finally {
+      setIsCancellingSeedr(false);
+    }
+  };
+
+  const handleStreamTorrent = (torrent: TorrentItem) => {
+    const streamableFile = torrent.files?.find(file => {
+      if (file.priority <= 0 || file.progress < 0.999) return false;
+      return /\.(mkv|mp4|m4v|webm|mov|avi|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name);
+    });
+
+    if (!streamableFile) return;
+
+    const lower = streamableFile.name.toLowerCase();
+    const type: StorageFile['type'] =
+      /\.(mkv|mp4|m4v|webm|mov|avi)$/i.test(lower) ? 'video' : 'audio';
+
+    const syntheticFile: StorageFile = {
+      id: `torrent-${torrent.hash}-${streamableFile.index}`,
+      name: streamableFile.name.split('/').pop() || streamableFile.name,
+      path: streamableFile.path || streamableFile.name,
+      folder: torrent.category || '/',
+      size: streamableFile.size,
+      type,
+      mimeType: type === 'video' ? 'video/mp4' : 'audio/mpeg',
+      createdAt: torrent.completion_on ? torrent.completion_on * 1000 : Date.now(),
+      torrentHash: torrent.hash,
+      isStreamable: true,
+      ownerId: activeUser?.id || 'user_admin',
+      ownerName: activeUser?.name || 'Admin',
+      downloadUrl: `/api/torrents/download/${encodeURIComponent(torrent.hash)}/${streamableFile.index}`,
+      streamUrl: `/api/torrents/stream/${encodeURIComponent(torrent.hash)}/${streamableFile.index}`
+    };
+
+    setActiveMediaFile(syntheticFile);
+    setIsPlayerMinimized(false);
+  };
+
+  const handlePauseTorrent = async (hash: string) => {
+    // Update immediately and hold that state through the next few polling
+    // cycles while qBittorrent finishes applying stop().
+    const previous = torrents;
+    pendingTransferStates.current[hash] = {
+      state: 'pausedDL',
+      expiresAt: Date.now() + 5000
+    };
+
+    setTorrents(prev =>
+      prev.map(t =>
+        t.hash === hash
+          ? { ...t, state: 'pausedDL', dlspeed: 0, eta: -1 }
+          : t
+      )
+    );
+
+    try {
+      await api.pauseTorrent(hash);
+    } catch (error) {
+      delete pendingTransferStates.current[hash];
+      console.error('Failed to pause torrent:', error);
+      setTorrents(previous);
+      throw error;
+    }
+  };
+
+  const handleResumeTorrent = async (hash: string) => {
+    const previous = torrents;
+    pendingTransferStates.current[hash] = {
+      state: 'downloading',
+      expiresAt: Date.now() + 5000
+    };
+
+    setTorrents(prev =>
+      prev.map(t =>
+        t.hash === hash
+          ? { ...t, state: 'downloading', eta: t.eta < 0 ? 0 : t.eta }
+          : t
+      )
+    );
+
+    try {
+      await api.resumeTorrent(hash);
+    } catch (error) {
+      delete pendingTransferStates.current[hash];
+      console.error('Failed to resume torrent:', error);
+      setTorrents(previous);
+      throw error;
+    }
+  };
+
+  const handleDeleteTorrent = (hash: string) => {
+    const torrent = torrents.find(t => t.hash === hash);
+    if (!torrent) return;
+    setDeleteTarget({
+      type: 'torrent',
+      id: torrent.hash,
+      name: torrent.name,
+      details: `${formatBytes(torrent.total_size)} • Progress: ${Math.round(torrent.progress * 100)}%`
+    });
+  };
+
+  const handleUpdateFilePriority = async (hash: string, fileId: string, priority: number) => {
+    const ids = fileId.split('|').map(Number).filter(Number.isFinite);
+    const previous = torrents;
+
+    // Reflect checkbox/priority changes immediately in the main torrent card.
+    setTorrents(prev =>
+      prev.map(t => {
+        if (t.hash !== hash) return t;
+
+        const nextFiles = (t.files || []).map(file =>
+          ids.includes(file.index)
+            ? {
+                ...file,
+                priority,
+                progress: priority === 0 ? 0 : file.progress
+              }
+            : file
+        );
+
+        const selectedSize = nextFiles
+          .filter(file => file.priority > 0)
+          .reduce((sum, file) => sum + file.size, 0);
+
+        return {
+          ...t,
+          files: nextFiles,
+          selected_size: selectedSize
+        };
+      })
+    );
+
+    try {
+      await api.setFilePriority(hash, fileId, priority);
+    } catch (error) {
+      console.error('Failed to update file priority:', error);
+      setTorrents(previous);
+      throw error;
+    }
+
+    api.getTorrents()
+      .then(setTorrents)
+      .catch(error => console.error('Failed to refresh torrents after priority update:', error));
+  };
+
+
+  const handleDownloadSeedrFolder = async (folderId: string, folderName = '') => {
+    try {
+      // Open the navigation synchronously from the click so the browser never
+      // treats it as an async popup. The backend supplies Content-Disposition
+      // with the requested filename.
+      const zipName = folderName && !folderName.toLowerCase().endsWith('.zip')
+        ? folderName + '.zip'
+        : folderName;
+      api.openSeedrFolderDownload(folderId, zipName);
+    } catch (error) {
+      console.error('Failed to start Seedr folder download:', error);
+      setSeedrError(error instanceof Error ? error.message : 'Failed to start Seedr folder download');
+    }
+  };
+
+  const handleCopySeedrFileUrl = async (fileId: string) => {
+    try {
+      const result = await api.getSeedrFileDownload(fileId);
+      await navigator.clipboard.writeText(result.url);
+      setCopiedSeedrFileId(fileId);
+      window.setTimeout(() => {
+        setCopiedSeedrFileId(current => current === fileId ? null : current);
+      }, 1800);
+    } catch (error) {
+      console.error('Failed to copy Seedr download link:', error);
+      setSeedrError(error instanceof Error ? error.message : 'Failed to copy Seedr download link');
+    }
+  };
+
+  const handleDownloadSeedrFile = async (fileId: string, fileName = '') => {
+    try {
+      // Start the browser navigation synchronously; backend streams the Seedr
+      // file with Content-Disposition preserving the real filename/extension.
+      api.openSeedrFileDownload(fileId, fileName);
+    } catch (error) {
+      console.error('Failed to start Seedr download:', error);
+      setSeedrError(error instanceof Error ? error.message : 'Failed to start Seedr download');
+    }
+  };
+
+  const handleStreamSeedrFile = async (file: { id: string; streamId?: string; name: string; size: number; folderId: string; folderPath: string }) => {
+    try {
+      const type: StorageFile['type'] =
+        /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts)$/i.test(file.name) ? 'video' :
+        /\.(mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name) ? 'audio' :
+        'document';
+
+      if (type !== 'video' && type !== 'audio') {
+        setSeedrError('This Seedr file is not a supported video or audio file.');
+        return;
+      }
+
+      setSeedrError(null);
+      const result = await api.getSeedrFileStream(file.streamId || file.id, file.name, type);
+      const syntheticFile: StorageFile = {
+        id: `seedr-${file.id}`,
+        name: result.name || file.name,
+        path: file.folderPath === '/' ? `/${file.name}` : `${file.folderPath}/${file.name}`,
+        folder: file.folderPath,
+        size: file.size,
+        type,
+        mimeType: type === 'video' ? 'video/mp4' : 'audio/mpeg',
+        createdAt: Date.now(),
+        ownerId: activeUser?.id || 'user_admin',
+        ownerName: activeUser?.name || 'Admin',
+        isStreamable: true,
+        streamUrl: result.url,
+        externalStreamUrl: result.externalUrl,
+        downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
+      };
+
+      setActiveMediaFile(syntheticFile);
+      setIsPlayerMinimized(false);
+    } catch (error) {
+      console.error('Failed to create Seedr stream URL:', error);
+      setSeedrError(error instanceof Error ? error.message : 'Failed to create Seedr stream URL');
+    }
+  };
+
+  const handleDeleteSeedrFile = async (file: { id: string; name: string; size: number; folderId: string; folderPath: string }) => {
+    setSeedrDeleteNotice('Deleting…');
+    try {
+      // A single-file Seedr folder is represented directly in My Cloud Files.
+      // In that special case, delete the whole Seedr folder rather than only
+      // the file. Files inside multi-file folders still use file deletion.
+      const group = seedrFolderGroups.find(item => item.folderId === file.folderId);
+      const isSingleFileFolder =
+        file.folderId !== '__root__' &&
+        group?.filesCount === 1;
+
+      if (isSingleFileFolder) {
+        await api.deleteSeedrFolder(file.folderId);
+        setSeedrFiles(prev => prev.filter(item => item.folderId !== file.folderId));
+      } else {
+        await api.deleteSeedrFile(file.id);
+        setSeedrFiles(prev => prev.filter(item => item.id !== file.id));
+        setSeedrLibraryFolders(prev => prev.map(item =>
+          (item.folderId === file.folderId || item.id === file.folderId)
+            ? {
+                ...item,
+                filesCount: Math.max(0, Number(item.filesCount || 0) - 1),
+                totalSize: Math.max(0, Number(item.totalSize || 0) - Number(file.size || 0)),
+              }
+            : item
+        ));
+      }
+
+      setSeedrError(null);
+      setSeedrDeleteNotice('Deleted successfully');
+      window.setTimeout(() => setSeedrDeleteNotice(null), 1800);
+      const quota = await api.getSeedrQuota().catch(() => null);
+      if (quota?.configured) {
+        setSeedrQuota({
+          maxSpace: quota.maxSpace,
+          usedSpace: quota.usedSpace,
+          remainingSpace: quota.remainingSpace
+        });
+      }
+    } catch (error) {
+      setSeedrDeleteNotice(null);
+      console.error('Failed to delete Seedr item:', error);
+      setSeedrError(error instanceof Error ? error.message : 'Failed to delete Seedr item');
+    }
+  };
+
+  const handleDeleteSeedrFolder = async (folderId: string) => {
+    setSeedrDeleteNotice('Deleting…');
+    try {
+      await api.deleteSeedrFolder(folderId);
+      setSeedrFiles(prev => prev.filter(item => item.folderId !== folderId));
+      setSeedrLibraryFolders(prev => prev.filter(item => item.folderId !== folderId && item.id !== folderId));
+      setSelectedSeedrFolderId(prev => prev === folderId ? null : prev);
+      setSeedrError(null);
+      setSeedrDeleteNotice('Deleted successfully');
+      window.setTimeout(() => setSeedrDeleteNotice(null), 1800);
+      const quota = await api.getSeedrQuota().catch(() => null);
+      if (quota?.configured) {
+        setSeedrQuota({
+          maxSpace: quota.maxSpace,
+          usedSpace: quota.usedSpace,
+          remainingSpace: quota.remainingSpace
+        });
+      }
+    } catch (error) {
+      setSeedrDeleteNotice(null);
+      console.error('Failed to delete Seedr folder:', error);
+      setSeedrError(error instanceof Error ? error.message : 'Failed to delete Seedr folder');
+    }
+  };
+
+  const handleDeleteFile = (id: string) => {
+    const file = files.find(f => f.id === id);
+    if (!file) return;
+    setDeleteTarget({
+      type: 'file',
+      id: file.id,
+      name: file.name,
+      details: `${formatBytes(file.size)} • Folder: ${file.folder}`
+    });
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      if (deleteTarget.type === 'file') {
+        await api.deleteFile(deleteTarget.id);
+        setFiles(prev => prev.filter(f => f.id !== deleteTarget.id));
+        const stats = await api.getStorageStats();
+        setStorageStats(stats);
+      } else if (deleteTarget.type === 'torrent') {
+        await api.deleteTorrent(deleteTarget.id, true);
+        setTorrents(prev => prev.filter(t => t.hash !== deleteTarget.id));
+        const stats = await api.getStorageStats();
+        setStorageStats(stats);
+        const f = await api.getFiles(currentFolder);
+        setFiles(f);
+      }
+    } catch (err) {
+      console.error('Failed to execute delete:', err);
+    }
+  };
+
+  const handleCreateFolder = async (name: string, isShared: boolean) => {
+    const newFolder = await api.createFolder(name, currentFolder, isShared);
+    setFolders(prev => [...prev, newFolder]);
+  };
+
+  const handleMoveFile = async (fileId: string, targetFolder: string) => {
+    await api.moveFile(fileId, targetFolder);
+    const updated = await api.getFiles(currentFolder);
+    setFiles(updated);
+  };
+
+  const handleRename = async (id: string, newName: string, isFolder: boolean) => {
+    await api.renameItem(id, newName, isFolder);
+    if (isFolder) {
+      const f = await api.getFolders();
+      setFolders(f);
+    }
+    const updated = await api.getFiles(currentFolder);
+    setFiles(updated);
+  };
+
+  const handleFolderShareSave = async (folderId: string, isShared: boolean, permissions: Record<string, UserPermission>) => {
+    await api.updateFolderShare(folderId, isShared, permissions);
+    const f = await api.getFolders();
+    setFolders(f);
+  };
+
+  const handleSwitchUser = async (userId: string) => {
+    const { activeUser: newUser } = await api.switchUser(userId);
+    setActiveUser(newUser);
+  };
+
+  const handleRunCleanup = async () => {
+    const res = await api.runCleanup();
+    const stats = await api.getStorageStats();
+    setStorageStats(stats);
+    const f = await api.getFiles(currentFolder);
+    setFiles(f);
+    const logs = await api.getLogs();
+    try {
+      const rawLocalLogs = window.localStorage.getItem(activityStorageKey);
+      const localLogs = rawLocalLogs ? JSON.parse(rawLocalLogs) : [];
+      setActivityLogs(Array.isArray(localLogs) && localLogs.length ? localLogs : logs);
+    } catch {
+      setActivityLogs(logs);
+    }
+    return res;
+  };
+
+  // Download batch zip
+  // Global telemetry speeds
+  const totalDlSpeed = torrents
+    .filter(t => t.state === 'downloading')
+    .reduce((acc, t) => acc + t.dlspeed, 0);
+  const totalUpSpeed = torrents.reduce((acc, t) => acc + t.upspeed, 0);
+  const activeDownloadsCount = torrents.filter(t => t.state === 'downloading').length;
+  const unreadNotifsCount = notifications.filter(n => !n.read).length;
+
+  const currentFolderPrefix = currentFolder === '/' ? '/' : currentFolder + '/';
+  const visibleFolders = folders
+    .filter(folder => folder.path !== '/' && folder.path.startsWith(currentFolderPrefix))
+    .filter(folder => {
+      const remainder = folder.path.slice(currentFolderPrefix.length);
+      return remainder.length > 0 && !remainder.includes('/');
+    });
+
+  return (
+    <div className={`min-h-screen flex flex-col ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : theme === 'dim' ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-900'} transition-colors duration-200`}>
+      {/* Top Main Navigation Header */}
+      <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-3 sm:px-6 py-3">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+          {/* Logo & Brand */}
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-500/25">
+              <Cloud className="w-5 h-5 text-slate-950 font-black fill-current" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base sm:text-lg font-black tracking-tight text-white">SeedFlow</h1>
+                <span className="hidden sm:inline px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 uppercase tracking-widest border border-cyan-500/30">
+                  qBt WebAPI
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400 hidden sm:block">
+                Unlimited Cloud Seedbox & Media Streamer
+              </p>
+            </div>
+          </div>
+
+          {/* Center: Live speeds & Storage Indicator */}
+          <div className="hidden md:flex items-center gap-4">
+            {/* Speed Pointers */}
+            <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono">
+              <div className="flex items-center gap-1 text-cyan-400">
+                <Download className="w-3.5 h-3.5" />
+                <span>{formatSpeed(totalDlSpeed)}</span>
+              </div>
+              <span className="text-slate-700">|</span>
+              <div className="flex items-center gap-1 text-indigo-400">
+                <Upload className="w-3.5 h-3.5" />
+                <span>{formatSpeed(totalUpSpeed)}</span>
+              </div>
+            </div>
+
+
+          </div>
+
+          {/* Right: Quick actions & User Switcher */}
+          <div className="flex items-center gap-2">
+            {/* "+ Add Magnet" Primary CTA */}
+            <button
+              onClick={() => openAddMagnet()}
+              className="px-3 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs sm:text-sm font-bold flex items-center gap-1.5 shadow-lg shadow-cyan-500/20 transition tap-target"
+            >
+              <Plus className="w-4 h-4 stroke-[3]" />
+              <span className="hidden sm:inline">Add Magnet</span>
+              <span className="sm:hidden">Add</span>
+            </button>
+
+            {/* Notification Bell */}
+            <button
+              onClick={() => setIsNotificationsOpen(true)}
+              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 relative transition tap-target flex items-center justify-center border border-slate-800"
+              title="Notifications & Push Alerts"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadNotifsCount > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-cyan-500 text-slate-950 font-bold text-[9px] flex items-center justify-center">
+                  {unreadNotifsCount}
+                </span>
+              )}
+            </button>
+
+            {/* Theme Toggle */}
+            <button
+              onClick={() => setTheme(theme === 'dark' ? 'dim' : theme === 'dim' ? 'light' : 'dark')}
+              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 transition tap-target hidden sm:flex items-center justify-center border border-slate-800"
+              title={`Theme: ${theme}`}
+            >
+              {theme === 'light' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-cyan-400" />}
+            </button>
+
+          </div>
+        </div>
+      </header>
+
+      {/* Desktop Subheader Navigation Tabs */}
+      <div className="hidden md:block bg-slate-900/60 border-b border-slate-800/80 px-6">
+        <div className="max-w-7xl mx-auto flex items-center gap-2 py-2">
+          <button
+            onClick={() => setActiveTab('search')}
+            className={activeTab === 'search'
+              ? 'px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
+              : 'px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}
+          >
+            <Search className="w-4 h-4" />
+            <span>Search</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('files')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
+              activeTab === 'files'
+                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <Folder className="w-4 h-4" />
+            <span>My Cloud Files</span>
+            <span className="text-[10px] opacity-70">({files.length})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('activity')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
+              activeTab === 'activity'
+                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <History className="w-4 h-4" />
+            <span>Activity Log</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('storage')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
+              activeTab === 'storage'
+                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
+            <span>Auto-Cleanup & Disk</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-6 pb-24 md:pb-12">
+        {/* Storage Alert Warning Banner if capacity high */}
+        {storageStats && storageStats.alertLevel !== 'normal' && (
+          <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-300">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+              <span>
+                Storage capacity advisory: {storageStats.usedPercentage}% of server disk is occupied. Auto-cleanup is active.
+              </span>
+            </div>
+            <button
+              onClick={() => setIsCleanupOpen(true)}
+              className="px-3 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 font-bold transition shrink-0 ml-2"
+            >
+              Inspect Disk
+            </button>
+          </div>
+        )}
+
+        {seedrAddBlockedNotice && (
+          <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-2.5 shadow-lg">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <div className="font-bold text-amber-300">Cannot add another Seedr download</div>
+              <div className="mt-0.5 text-amber-200/80">{seedrAddBlockedNotice}</div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 0: TORRENT SEARCH
+            Keep this component mounted when switching tabs so an in-flight
+            search continues in the background and its results remain available
+            when the user returns to Search. */}
+        <div className={activeTab === 'search' ? 'block' : 'hidden'}>
+          <TorrentSearchPanel onAdd={handleSearchAdd} />
+        </div>
+
+        {/* TAB 2: MY CLOUD FILES */}
+        {activeTab === 'files' && (
+          <div className="space-y-4">
+            {seedrNotice && seedrNotice.status !== 'completed' && (
+              <div className="p-4 rounded-2xl bg-slate-900 border border-emerald-500/25 shadow-lg shadow-emerald-500/5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span className="text-xs font-bold text-emerald-300">Downloading with Seedr</span>
+                      <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        {seedrNotice.status === 'waiting' ? 'Waiting' : 'Downloading'}
+                      </span>
+                    </div>
+                    <div className="text-sm font-semibold text-slate-200 mt-1 truncate">{seedrNotice.name}</div>
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
+                        <span>Seedr progress</span>
+                        <span className="font-mono text-emerald-300">
+                          {Number(seedrNotice.progress).toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '')}%
+                        </span>
+                      </div>
+                      <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-emerald-400 transition-all duration-500"
+                          style={{ width: `${Math.max(0, Math.min(100, Number(seedrNotice.progress) || 0))}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-2">
+                    <span className="font-mono text-[10px] text-slate-500">
+                      Task {seedrNotice.taskId ?? 'created'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelSeedrDownload()}
+                      disabled={isCancellingSeedr || seedrNotice.taskId == null}
+                      className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 disabled:opacity-40 disabled:cursor-not-allowed text-[10px] font-bold transition"
+                      title="Cancel Seedr download"
+                    >
+                      {isCancellingSeedr ? 'Cancelling…' : 'Cancel'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Persistent Seedr Library */}
+            <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/20">
+              {seedrDeleteNotice && (
+                <div className="mb-3 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{seedrDeleteNotice}</span>
+                </div>
+              )}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                    <Cloud className="w-5 h-5 text-emerald-400" />
+                    <span>Seedr Library</span>
+                    {seedrConfigured && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                        {seedrLibraryRoot?.filesCount || 0} files
+                      </span>
                     )}
                   </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
@@ -30,3 +1819,701 @@
                   disabled={seedrLoading}
                   className="shrink-0 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
                 >
+                  <RefreshCw className={`w-3.5 h-3.5 ${seedrLoading ? 'animate-spin' : ''}`} />
+                  <span>{seedrLoading ? 'Refreshing...' : 'Refresh Seedr'}</span>
+                </button>
+              </div>
+
+              {seedrConfigured && seedrQuota && seedrQuota.remainingSpace <= 0 && (
+                <div className="mt-3 rounded-xl bg-rose-500/10 border border-rose-500/20 px-3 py-2.5 text-xs text-rose-200">
+                  <strong>Seedr is full.</strong> New torrents that fit the Seedr size limit will be offered to qBittorrent instead, or you can free space in Seedr and try again.
+                </div>
+              )}
+
+              {seedrError && (
+                <div className="mt-3 rounded-xl bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-xs text-rose-300">
+                  {seedrError}
+                </div>
+              )}
+
+              {!seedrLoading && !seedrError && !seedrConfigured && (
+                <div className="mt-3 rounded-xl bg-slate-900/70 border border-slate-800 px-3 py-3 text-xs text-slate-400">
+                  Seedr is not configured on the server.
+                </div>
+              )}
+
+              {!seedrLoading && !seedrError && seedrConfigured && (seedrLibraryRoot?.filesCount || 0) === 0 && seedrLibraryFolders.length === 0 && !(seedrNotice?.taskId != null && seedrNotice.status !== 'completed') && (
+                <div className="mt-3 rounded-xl bg-slate-900/70 border border-slate-800 px-3 py-3 text-xs text-slate-400">
+                  No completed files are currently visible in your Seedr library.
+                </div>
+              )}
+
+              {seedrConfigured && (
+                <div className="mt-3">
+                  {selectedSeedrFolderId === null ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {seedrFolderGroups.map(folder => {
+                        // Seedr always stores a torrent as a folder. Keep the
+                        // top-level library consistent even when the folder has
+                        // only one file; open it to access file actions.
+                        return (
+                          <div
+                            key={folder.folderId}
+                            className="h-full rounded-xl bg-slate-900/80 border border-slate-800 px-3 py-3 hover:border-cyan-500/30 transition"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <button
+                                type="button"
+                                onClick={() => void handleOpenSeedrFolder(folder.folderId)}
+                                className="min-w-0 flex-1 text-left flex items-center gap-3"
+                                disabled={folder.folderId === '__root__'}
+                              >
+                                <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 shrink-0">
+                                  <Folder className="w-5 h-5" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-sm font-semibold text-slate-100">{folder.name}</div>
+                                  <div className="text-[10px] text-slate-500 mt-0.5">
+                                    {folder.filesCount} files • {formatBytes(folder.totalSize)}
+                                    {folder.active && <span className="text-emerald-300"> • Downloading</span>}
+                                  </div>
+                                  {folder.active && (
+                                    <div className="mt-1.5 flex items-center gap-2">
+                                      <div className="h-1.5 flex-1 rounded-full bg-slate-800 overflow-hidden">
+                                        <div
+                                          className="h-full rounded-full bg-emerald-400 transition-all duration-500"
+                                          style={{ width: (folder.progress ?? 0) + '%' }}
+                                        />
+                                      </div>
+                                      <span className="shrink-0 text-[10px] font-mono font-semibold text-emerald-300">
+                                        {Number(folder.progress ?? 0).toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '')}%
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                                <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
+                              </button>
+
+                              {folder.active && (
+                                <div className="shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleCancelSeedrDownload()}
+                                    disabled={isCancellingSeedr || seedrNotice?.taskId == null}
+                                    className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 disabled:opacity-40 disabled:cursor-not-allowed text-[10px] font-bold transition"
+                                    title="Cancel Seedr download"
+                                  >
+                                    {isCancellingSeedr ? 'Cancelling…' : 'Cancel'}
+                                  </button>
+                                </div>
+                              )}
+
+                              {!folder.active && folder.folderId !== '__root__' && (
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDownloadSeedrFolder(folder.folderId, folder.name)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
+                                  >
+                                    Download
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteSeedrFolder(folder.folderId)}
+                                    className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 transition"
+                                    title="Delete Seedr folder"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}                    </div>
+                  ) : (
+                    (() => {
+                      const folder = seedrFolderGroups.find(item => item.folderId === selectedSeedrFolderId);
+                      if (!folder) return null;
+
+                      return (
+                        <div>
+                          <div className="flex items-center justify-between gap-3 mb-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedSeedrFolderId(null);
+                                setSeedrFiles([]);
+                                setSeedrFolderContentsLoading(false);
+                                setSeedrError(null);
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5"
+                            >
+                              ← Back to folders
+                            </button>
+                            <div className="text-right min-w-0">
+                              <div className="text-sm font-semibold text-slate-100 truncate">{folder.name}</div>
+                              <div className="text-[10px] text-slate-500">{folder.filesCount} files • {formatBytes(folder.totalSize)}</div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadSeedrFolder(folder.folderId)}
+                              className="shrink-0 px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
+                            >
+                              Download ZIP
+                            </button>
+                          </div>
+
+                          {seedrFolderContentsLoading ? (
+                            <div className="py-10 text-center text-xs text-slate-400">
+                              <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin text-emerald-400" />
+                              Loading folder contents…
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-2">
+                              {seedrFiles.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })).map(file => (
+                              <div
+                                key={file.id}
+                                className="flex items-center justify-between gap-3 rounded-xl bg-slate-900/80 border border-slate-800 px-3 py-2.5"
+                              >
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium text-slate-200">{file.name}</div>
+                                  <div className="text-[10px] text-slate-500 mt-0.5">
+                                    {formatBytes(file.size)}
+                                    {file.downloading ? ' • Downloading' : ''}
+                                  </div>
+                                  {file.downloadProgress != null && (
+                                    <div className="mt-1.5 flex items-center gap-2 max-w-sm">
+                                      <div className="h-1.5 flex-1 rounded-full bg-slate-800 overflow-hidden">
+                                        <div
+                                          className="h-full rounded-full bg-emerald-400 transition-all duration-500"
+                                          style={{ width: Math.max(0, Math.min(100, file.downloadProgress)) + '%' }}
+                                        />
+                                      </div>
+                                      <span className="shrink-0 text-[10px] font-mono font-semibold text-emerald-300">
+                                        {Number(file.downloadProgress).toFixed(0)}%
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="shrink-0 flex items-center gap-1.5">
+                                  {/\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStreamSeedrFile(file)}
+                                      className="px-2.5 py-1.5 rounded-lg bg-cyan-500 text-slate-950 font-bold text-xs hover:bg-cyan-400 transition"
+                                    >
+                                      Stream
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDownloadSeedrFile(file.id, file.name)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
+                                  >
+                                    Download
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleCopySeedrFileUrl(file.id)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
+                                    title="Copy direct download URL"
+                                  >
+                                    <Copy className="w-3.5 h-3.5" />
+                                    {copiedSeedrFileId === file.id ? 'Copied' : 'Copy URL'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteSeedrFile(file)}
+                                    className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 hover:bg-rose-500/20 hover:text-rose-200 transition"
+                                    title="Delete this file"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()
+                  )}
+                </div>
+              )}            </div>
+
+            {/* Header & Breadcrumb & Search */}
+            <div className="flex flex-col gap-3 p-4 rounded-2xl bg-slate-900 border border-slate-800">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                {/* Folder Breadcrumb */}
+                <div className="flex items-center gap-2 overflow-x-auto text-xs font-semibold">
+                  <button
+                    onClick={() => setCurrentFolder('/')}
+                    className={`px-2.5 py-1.5 rounded-lg transition ${
+                      currentFolder === '/'
+                        ? 'bg-cyan-500/20 text-cyan-400'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Root
+                  </button>
+
+                  {folders
+                    .filter(f => f.path !== '/')
+                    .map(folder => (
+                      <React.Fragment key={folder.id}>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                        <button
+                          onClick={() => setCurrentFolder(folder.path)}
+                          className={`px-2.5 py-1.5 rounded-lg whitespace-nowrap transition ${
+                            currentFolder === folder.path
+                              ? 'bg-cyan-500/20 text-cyan-400'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {folder.name}
+                        </button>
+                      </React.Fragment>
+                    ))}
+                </div>
+
+
+              </div>
+
+              {/* Search & Category Filter */}
+              <div className="flex flex-col sm:flex-row items-center gap-2.5 pt-2 border-t border-slate-800/80">
+                <div className="relative flex-1 w-full">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="text"
+                    placeholder="Search files by name..."
+                    value={fileSearch}
+                    onChange={(e) => setFileSearch(e.target.value)}
+                    className="w-full pl-9 pr-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1 overflow-x-auto w-full sm:w-auto text-xs">
+                  {['all', 'video', 'audio', 'document', 'archive'].map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setFileTypeFilter(t)}
+                      className={`px-2.5 py-1 rounded-lg capitalize font-medium transition ${
+                        fileTypeFilter === t
+                          ? 'bg-cyan-500 text-slate-950 font-bold'
+                          : 'bg-slate-850 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Folders and Files */}
+                {visibleFolders.length > 0 ? (
+                  <div className="grid grid-cols-1 gap-2.5">
+                    {visibleFolders
+                      .map((folder) => (
+                        <button
+                          key={folder.id}
+                          type="button"
+                          onClick={() => setCurrentFolder(folder.path)}
+                          className="w-full p-3.5 rounded-2xl bg-slate-900 border border-slate-800 hover:border-cyan-500/40 hover:bg-slate-900/80 transition shadow-sm flex items-center gap-3 text-left group"
+                        >
+                          <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/20 shrink-0">
+                            <Folder className="w-5 h-5 text-cyan-400" />
+                          </div>
+                          <div className="truncate flex-1">
+                            <h4 className="text-sm font-semibold text-slate-200 truncate group-hover:text-cyan-400 transition">
+                              {folder.name}
+                            </h4>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              {folder.filesCount || 0} files • {formatBytes(folder.totalSize || 0)}
+                            </p>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-cyan-400 shrink-0" />
+                        </button>
+                      ))}
+                  </div>
+                ) : null}
+
+                {visibleFiles.length > 0 && (
+                  <div className="grid grid-cols-1 gap-2.5">
+                    {visibleFiles.map((file) => (
+                      <FileCard
+                        key={file.id}
+                        file={file}
+                        onPlay={(f) => {
+                          setActiveMediaFile(f);
+                          setIsPlayerMinimized(false);
+                        }}
+                        onDelete={handleDeleteFile}
+                        onRename={(f) => setRenameItem({ id: f.id, name: f.name, isFolder: false })}
+                        onMove={(f) => setMoveFile(f)}
+                        canEdit={activeUser?.role !== 'viewer'}
+                        canDelete={activeUser?.role === 'admin'}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {seedrPrefetchLoading && currentFolder === '/' && seedrAllPrefetchedFiles.length === 0 ? (
+                  <div className="py-10 text-center rounded-2xl bg-slate-900 border border-slate-800 p-8">
+                    <RefreshCw className="w-8 h-8 text-emerald-400 mx-auto mb-3 animate-spin" />
+                    <h3 className="text-sm font-bold text-slate-300">Loading Seedr files…</h3>
+                    <p className="text-xs text-slate-500 mt-1">Folder metadata is ready. Loading file details in the background.</p>
+                  </div>
+                ) : visibleFolders.length === 0 && visibleFiles.length === 0 && (
+                  <div className="py-16 text-center rounded-2xl bg-slate-900 border border-slate-800 p-8">
+                    <Folder className="w-12 h-12 text-slate-700 mx-auto mb-3" />
+                    <h3 className="text-sm font-bold text-slate-300">No files found in this folder</h3>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Completed torrent downloads and uploaded media appear here instantly.
+                    </p>
+                  </div>
+                )}
+
+          </div>
+        )}
+
+        {/* TAB 3: SHARED STORAGE & MULTI-USER */}
+        {activeTab === 'shared' && (
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-slate-900 border border-slate-800">
+              <div>
+                <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                  <Users className="w-5 h-5 text-cyan-400" />
+                  <span>Shared Team Folders & Access Controls</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Multi-user folder permissions with customizable Viewer, Editor, and Admin roles.
+                </p>
+              </div>
+
+              <button
+                onClick={() => setIsCreateFolderOpen(true)}
+                className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 transition"
+              >
+                <FolderPlus className="w-4 h-4" />
+                <span>New Shared Folder</span>
+              </button>
+            </div>
+
+            {/* Folders List */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {folders.filter(f => f.path !== '/').map((folder) => {
+                const isOwner = folder.ownerId === activeUser?.id;
+                const userPerm = isOwner ? 'admin' : folder.permissions[activeUser?.id || ''] || 'viewer';
+
+                  return (
+                  <div
+                    key={folder.id}
+                    className="p-4 rounded-2xl bg-slate-900 border border-slate-800 hover:border-slate-700 transition flex flex-col justify-between gap-3"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5 overflow-hidden">
+                        <div className="p-2.5 rounded-xl bg-cyan-500/10 text-cyan-400 shrink-0">
+                          <Folder className="w-5 h-5" />
+                        </div>
+                        <div className="truncate">
+                          <h4 className="text-sm font-semibold text-slate-100 truncate">{folder.name}</h4>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Created by {folder.ownerName}
+                          </p>
+                        </div>
+                      </div>
+
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
+                          folder.isShared
+                            ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {folder.isShared ? 'Shared' : 'Private'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-slate-800/60">
+                      <span>{folder.filesCount || 0} files ({formatBytes(folder.totalSize || 0)})</span>
+                      <span className="text-cyan-400 font-medium capitalize">Role: {userPerm}</span>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={() => {
+                          setCurrentFolder(folder.path);
+                          setActiveTab('files');
+                        }}
+                        className="flex-1 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition"
+                      >
+                        Open Folder
+                      </button>
+
+                      <button
+                        onClick={() => setShareFolder(folder)}
+                        className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition"
+                        title="Manage Permissions"
+                      >
+                        <Share2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: ACTIVITY LOG */}
+        {activeTab === 'activity' && (
+          <ActivityLogView
+            logs={activityLogs}
+            onClearLogs={async () => {
+              await api.clearLogs();
+              try { window.localStorage.removeItem(activityStorageKey); } catch {}
+              setActivityLogs([]);
+            }}
+            onRefresh={async () => {
+              const logs = await api.getLogs();
+              setActivityLogs(logs);
+            }}
+          />
+        )}
+
+        {/* TAB 5: STORAGE & AUTO-CLEANUP */}
+        {activeTab === 'storage' && storageStats && cleanupSettings && (
+          <div className="space-y-4">
+            <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                  <HardDrive className="w-5 h-5 text-cyan-400" />
+                  <span>Uncapped Server Disk Storage & Auto-Cleanup</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-1 max-w-xl">
+                  Unlike conventional cloud seedboxes with 5GB caps, SeedFlow utilizes your full host storage allocation with automated orphan & temp fragment garbage collection.
+                </p>
+              </div>
+
+              <button
+                onClick={() => setIsCleanupOpen(true)}
+                className="px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center gap-2 shadow-lg shadow-cyan-500/20 transition self-start md:self-auto"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>Configure Auto-Cleanup</span>
+              </button>
+            </div>
+
+            {/* Storage Cards Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+                <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Used Storage</p>
+                <p className="text-xl font-bold font-mono text-cyan-400 mt-1">{formatBytes(storageStats.usedBytes)}</p>
+                <p className="text-[11px] text-slate-500 mt-1">{storageStats.usedPercentage}% of total server capacity</p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+                <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Available Free Space</p>
+                <p className="text-xl font-bold font-mono text-emerald-400 mt-1">{formatBytes(storageStats.freeBytes)}</p>
+                <p className="text-[11px] text-slate-500 mt-1">Ready for high-bandwidth downloads</p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+                <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Total Server Disk</p>
+                <p className="text-xl font-bold font-mono text-slate-100 mt-1">{formatBytes(storageStats.totalBytes)}</p>
+                <p className="text-[11px] text-cyan-400 mt-1 flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Unlimited Server Storage (No 5GB cap)</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Floating Bottom Media Player (when minimized or active) */}
+      <MediaPlayerModal
+        file={activeMediaFile}
+        onClose={() => setActiveMediaFile(null)}
+        isMinimized={isPlayerMinimized}
+        onToggleMinimize={() => setIsPlayerMinimized(!isPlayerMinimized)}
+      />
+
+      {/* Mobile Floating Action Button (FAB) for Add Magnet */}
+      <button
+        onClick={() => openAddMagnet()}
+        className="md:hidden fixed right-4 bottom-20 z-30 p-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-xl shadow-cyan-500/30 flex items-center justify-center font-bold"
+        title="Add Magnet Link"
+      >
+        <Plus className="w-6 h-6 stroke-[2.5]" />
+      </button>
+
+      {/* Mobile More actions sheet */}
+      {isMobileMoreOpen && (
+        <>
+          <button
+            type="button"
+            aria-label="Close more menu"
+            onClick={() => setIsMobileMoreOpen(false)}
+            className="md:hidden fixed inset-0 z-40 bg-black/50 backdrop-blur-[1px]"
+          />
+          <div className="md:hidden fixed left-3 right-3 bottom-20 z-50 rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl p-3">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => { setActiveTab('activity'); setIsMobileMoreOpen(false); }}
+                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
+              >
+                <History className="w-4 h-4 text-cyan-400" />
+                Activity Log
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { setActiveTab('storage'); setIsMobileMoreOpen(false); }}
+                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
+              >
+                <Sparkles className="w-4 h-4 text-cyan-400" />
+                Storage
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setTheme(theme === 'dark' ? 'dim' : theme === 'dim' ? 'light' : 'dark');
+                }}
+                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
+              >
+                {theme === 'light'
+                  ? <Sun className="w-4 h-4 text-amber-400" />
+                  : <Moon className="w-4 h-4 text-cyan-400" />}
+                Theme: {theme}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Mobile Bottom Navigation */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-950/95 backdrop-blur-xl border-t border-slate-800 px-1 pb-[calc(env(safe-area-inset-bottom)+4px)] pt-1.5">
+        <div className="grid grid-cols-4 items-center">
+          <button
+            onClick={() => { setActiveTab('search'); setIsMobileMoreOpen(false); }}
+            className={`flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${activeTab === 'search' ? 'text-cyan-400' : 'text-slate-400'}`}
+          >
+            <Search className="w-5 h-5" />
+            <span className="text-[9px] font-semibold">Search</span>
+          </button>
+
+          <button
+            onClick={() => { setActiveTab('files'); setIsMobileMoreOpen(false); }}
+            className={`flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${activeTab === 'files' ? 'text-cyan-400' : 'text-slate-400'}`}
+          >
+            <Folder className="w-5 h-5" />
+            <span className="text-[9px] font-semibold">Files</span>
+          </button>
+
+          <button
+            onClick={() => setIsMobileMoreOpen(prev => !prev)}
+            className={`flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${isMobileMoreOpen || activeTab === 'activity' || activeTab === 'storage' ? 'text-cyan-400' : 'text-slate-400'}`}
+          >
+            <Layers className="w-5 h-5" />
+            <span className="text-[9px] font-semibold">More</span>
+          </button>
+        </div>
+      </nav>
+
+      {/* Modals */}
+      <AddMagnetModal
+        isOpen={isAddMagnetOpen}
+        onClose={() => {
+          setIsAddMagnetOpen(false);
+          setInitialMagnet('');
+          setSeedrSelectionContext(null);
+        }}
+        onOpen={() => {
+          openAddMagnet(initialMagnet);
+        }}
+        onAdd={handleAddMagnet}
+        defaultFolder={currentFolder === '/' ? 'Downloads' : currentFolder.replace('/', '')}
+        initialMagnet={initialMagnet}
+        selectionReason={seedrSelectionContext}
+      />
+
+      <FilePrioModal
+        torrent={prioTorrent}
+        onClose={() => setPrioTorrent(null)}
+        onUpdatePriority={handleUpdateFilePriority}
+      />
+
+      <StorageCleanupModal
+        isOpen={isCleanupOpen}
+        onClose={() => setIsCleanupOpen(false)}
+        stats={storageStats}
+        settings={cleanupSettings}
+        onUpdateSettings={async (settings) => {
+          const updated = await api.updateCleanupSettings(settings);
+          setCleanupSettings(updated);
+        }}
+        onRunCleanup={handleRunCleanup}
+      />
+
+      <FolderShareModal
+        folder={shareFolder}
+        users={users}
+        onClose={() => setShareFolder(null)}
+        onSave={handleFolderShareSave}
+      />
+
+      <NotificationCenter
+        notifications={notifications}
+        isOpen={isNotificationsOpen}
+        onClose={() => setIsNotificationsOpen(false)}
+        onMarkRead={async () => {
+          await api.markNotificationsRead();
+          setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+        }}
+        onTestPush={async () => {
+          await api.testNotification();
+          dispatchBrowserNotification('SeedFlow Push Notification Test', 'Push alert successfully triggered! Everything is running smoothly.');
+          const notifs = await api.getNotifications();
+          setNotifications(notifs);
+        }}
+      />
+
+      <CreateFolderModal
+        isOpen={isCreateFolderOpen}
+        onClose={() => setIsCreateFolderOpen(false)}
+        onCreate={handleCreateFolder}
+        currentPath={currentFolder}
+      />
+
+      <MoveFileModal
+        file={moveFile}
+        folders={folders}
+        onClose={() => setMoveFile(null)}
+        onMove={handleMoveFile}
+      />
+
+      <RenameModal
+        item={renameItem}
+        onClose={() => setRenameItem(null)}
+        onRename={handleRename}
+      />
+
+      {deleteTarget && (
+        <ConfirmDeleteModal
+          isOpen={Boolean(deleteTarget)}
+          title={deleteTarget.type === 'file' ? 'Delete File' : 'Remove Torrent Task'}
+          itemName={deleteTarget.name}
+          itemDetails={deleteTarget.details}
+          itemType={deleteTarget.type}
+          onConfirm={handleConfirmDelete}
+          onClose={() => setDeleteTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
