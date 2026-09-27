@@ -35,6 +35,12 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
   const [minSeeders, setMinSeeders] = useState(0);
   const [showRecentSearches, setShowRecentSearches] = useState(false);
   const [addingTorrentKey, setAddingTorrentKey] = useState<string | null>(null);
+  const apiFetchRecent = (input: RequestInfo | URL, init?: RequestInit) => {
+    const base = (String(import.meta.env.VITE_API_URL || '').trim() || 'https://torrent-studio-vercel-render-seedr.onrender.com').replace(/\/+$/, '');
+    const value = String(input);
+    return fetch(value.startsWith('/') ? base + value : value, init);
+  };
+
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('seedflow_recent_searches');
@@ -50,7 +56,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
   useEffect(() => {
     let cancelled = false;
 
-    fetch('/api/search/recent')
+    apiFetchRecent('/api/search/recent')
       .then(response => response.ok ? response.json() : null)
       .then(data => {
         if (cancelled) return;
@@ -85,7 +91,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
         localStorage.setItem('seedflow_recent_searches', JSON.stringify(next));
       } catch {}
 
-      void fetch('/api/search/recent', {
+      void apiFetchRecent('/api/search/recent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ search: normalized })
