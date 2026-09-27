@@ -1079,14 +1079,29 @@ async def rename_seedr_folder(folder_id: str, name: str) -> bool:
 
 async def add_task(magnet: str, folder_id: int) -> dict[str, Any]:
     normalized = normalize_magnet(magnet)
+    # Seedr's current task endpoint expects a JSON body. The older
+    # application used form encoding here, which causes Seedr to return
+    # {"reason_phrase":"parsing_error"}.
     try:
-        result = seedr_data(await seedr_request("/tasks", "POST", {"torrent_magnet": normalized, "folder_id": folder_id}, form=True))
+        result = seedr_data(
+            await seedr_request(
+                "/tasks",
+                "POST",
+                {"torrent_magnet": normalized, "folder_id": folder_id},
+            )
+        )
         if isinstance(result, dict):
             return result
     except HTTPException as exc:
         h = info_hash(normalized)
         if exc.status_code == 400 and h:
-            result = seedr_data(await seedr_request("/tasks", "POST", {"torrent_magnet": f"magnet:?xt=urn:btih:{h}", "folder_id": folder_id}, form=True))
+            result = seedr_data(
+                await seedr_request(
+                    "/tasks",
+                    "POST",
+                    {"torrent_magnet": f"magnet:?xt=urn:btih:{h}", "folder_id": folder_id},
+                )
+            )
             if isinstance(result, dict):
                 return result
         raise
