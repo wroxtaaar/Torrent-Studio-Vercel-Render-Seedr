@@ -31,6 +31,7 @@ SEEDR_MAX_SIZE_BYTES = int(SEEDR_MAX_SIZE_GB * 1024**3)
 SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "episode", "web", "show", "tv"}
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
+TORRENT_METADATA_API_URL = os.getenv("TORRENT_METADATA_API_URL", "https://torrentmeta.fly.dev").rstrip("/")
 SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "8.5"))
 SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
 TORRENT_METADATA_CACHE_FILE = Path(os.getenv("TORRENT_METADATA_CACHE_FILE", "/app/.torrent_metadata_cache.json"))
@@ -3040,11 +3041,73 @@ def _libtorrent_metadata_sync(magnet: str) -> tuple[str, str, list[dict[str, Any
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-async def _lookup_knaben_by_hash(info_hash_value: str) -> str:
-    """Find a Knaben cached descriptor for an exact info-hash, if available."""
+async def _fetch_remote_torrent_metadata(magnet: str, info_hash_value: str) -> dict[str, Any] | None:
+    """Use a dedicated metadata-only service as a fast fallback for magnets."""
+    if not TORRENT_METADATA_API_URL:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=7.0, follow_redirects=True) as client:
+            response = await client.post(
+                TORRENT_METADATA_API_URL.rstrip("/") + "/",
+                json={"query": magnet},
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.info("Remote metadata service failed for %s: %s", info_hash_value, exc)
+        return None
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return None
+    returned_hash = str(data.get("infoHash") or "").strip().lower()
+    if returned_hash and returned_hash != info_hash_value.lower():
+        logger.info("Remote metadata hash mismatch: wanted %s, got %s", info_hash_value, returned_hash)
+        return None
+
+    raw_files = data.get("files")
+    if not isinstance(raw_files, list) or not raw_files:
+        return None
+
+    files: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_files):
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("name") or "").strip()
+        if not path:
+            continue
+        files.append({
+            "index": index,
+            "name": str(item.get("name") or path),
+            "size": int(float(item.get("size") or 0)),
+            "path": path,
+            "type": "file",
+            "priority": 1,
+        })
+    if not files:
+        return None
+
+    result = {
+        "name": str(data.get("name") or files[0]["name"]),
+        "hash": info_hash_value.lower(),
+        "files": files,
+        "totalSize": sum(int(item["size"]) for item in files),
+        "source": "remote_torrent_metadata",
+        "pending": False,
+        "createdPreview": False,
+        "message": "Torrent metadata loaded without starting Seedr.",
+    }
+    _metadata_cache[info_hash_value.lower()] = result
+    _save_metadata_cache()
+    return result
+
+
+async def _lookup_knaben_by_hash(info_hash_value: str) -> dict[str, Any] | None:
+    """Find and parse a Knaben cached descriptor for an exact info-hash."""
     target = info_hash_value.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", target):
-        return ""
+        return None
 
     payload_base = {
         "search_type": "100%",
@@ -3064,10 +3127,7 @@ async def _lookup_knaben_by_hash(info_hash_value: str) -> str:
                 response = await client.post(
                     KNABEN_API_URL,
                     json=payload,
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                    },
+                    headers={"Accept": "application/json", "Content-Type": "application/json"},
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -3087,17 +3147,16 @@ async def _lookup_knaben_by_hash(info_hash_value: str) -> str:
 
                 descriptor = str(hit.get("link") or "").strip()
                 if descriptor:
-                    return descriptor
+                    parsed = await _fetch_source_torrent_descriptor(descriptor, target)
+                    if parsed:
+                        return parsed
 
                 details = str(hit.get("details") or "").strip()
                 if details:
-                    found = await _fetch_source_torrent_descriptor(details, target)
-                    if found:
-                        # The helper returns metadata, not the URL. The caller
-                        # will use this path only when a descriptor was already
-                        # parsed, so this sentinel remains empty here.
-                        return ""
-    return ""
+                    parsed = await _fetch_source_torrent_descriptor(details, target)
+                    if parsed:
+                        return parsed
+    return None
 
 
 @app.post("/api/v2/torrents/inspect-magnet")
@@ -3132,14 +3191,19 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
     # For a pasted magnet there is no source URL. Try an exact info-hash
     # lookup in Knaben before falling back to swarm/DHT metadata discovery.
     try:
-        hash_descriptor = await _lookup_knaben_by_hash(h)
+        hash_result = await _lookup_knaben_by_hash(h)
     except Exception as exc:
         logger.info("Knaben hash lookup failed for %s: %s", h, exc)
-        hash_descriptor = ""
-    if hash_descriptor:
-        descriptor_result = await _fetch_source_torrent_descriptor(hash_descriptor, h)
-        if descriptor_result:
-            return descriptor_result
+        hash_result = None
+    if hash_result:
+        return hash_result
+
+    # A dedicated metadata resolver is much faster than waiting on DHT when
+    # the magnet has no reachable peers. It only retrieves torrent metadata;
+    # it does not start a download or send anything to Seedr.
+    remote_result = await _fetch_remote_torrent_metadata(magnet, h)
+    if remote_result:
+        return remote_result
 
     job_id = h
     existing = _metadata_jobs.get(job_id)
