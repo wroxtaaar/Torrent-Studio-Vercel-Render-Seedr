@@ -245,6 +245,17 @@ export default function App() {
     folderId: string;
     folderPath: string;
   }>>>({});
+  // Track background folder-content requests so clicking a folder while its
+  // automatic prefetch is still running reuses the same promise instead of
+  // issuing a duplicate API request.
+  const seedrFolderContentsRequests = useRef<Record<string, Promise<Array<{
+    id: string;
+    streamId?: string;
+    name: string;
+    size: number;
+    folderId: string;
+    folderPath: string;
+  }>>>>({});
   const [seedrConfigured, setSeedrConfigured] = useState(false);
   const [seedrQuota, setSeedrQuota] = useState<{ maxSpace: number; usedSpace: number; remainingSpace: number } | null>(null);
   const [seedrLoading, setSeedrLoading] = useState(false);
@@ -699,28 +710,34 @@ export default function App() {
               if (!folderId) return;
 
               try {
-                const contents = await api.getSeedrFolderContents(folderId);
-                const folderPath = folder.path || '/Torrent Studio';
-                loadedEntries[folderId] = contents.files.map(file => ({
-                  id: file.id,
-                  streamId: file.streamId,
-                  name: file.name,
-                  size: Number(file.size) || 0,
-                  folderId: file.folderId || folderId,
-                  folderPath,
+                const existingRequest = seedrFolderContentsRequests.current[folderId];
+                const request = existingRequest || (async () => {
+                  const contents = await api.getSeedrFolderContents(folderId);
+                  const folderPath = folder.path || '/Torrent Studio';
+                  return contents.files.map(file => ({
+                    id: file.id,
+                    streamId: file.streamId,
+                    name: file.name,
+                    size: Number(file.size) || 0,
+                    folderId: file.folderId || folderId,
+                    folderPath,
+                  }));
+                })();
+
+                seedrFolderContentsRequests.current[folderId] = request;
+                const mapped = await request;
+                loadedEntries[folderId] = mapped;
+                setSeedrFolderContentsCache(prev => ({
+                  ...prev,
+                  [folderId]: mapped,
                 }));
               } catch (error) {
                 // A single inaccessible/still-indexing folder must not leave
                 // the whole Files page in a permanent loading state. The
                 // folder can still be retried by clicking it.
                 console.warn('Failed to prefetch Seedr folder contents:', folderId, error);
-              }
-
-              if (activeTab === 'files') {
-                setSeedrFolderContentsCache(prev => ({
-                  ...prev,
-                  ...(loadedEntries[folderId] ? { [folderId]: loadedEntries[folderId] } : {}),
-                }));
+              } finally {
+                delete seedrFolderContentsRequests.current[folderId];
               }
             }));
           }
@@ -774,6 +791,16 @@ export default function App() {
     setSeedrFolderContentsLoading(true);
 
     try {
+      // If the automatic background prefetch is already running, await that
+      // exact request instead of making a second network call.
+      const pendingRequest = seedrFolderContentsRequests.current[folderId];
+      if (pendingRequest) {
+        const mapped = await pendingRequest;
+        setSeedrFolderContentsCache(prev => ({ ...prev, [folderId]: mapped }));
+        setSeedrFiles(mapped);
+        return;
+      }
+
       const result = await api.getSeedrFolderContents(folderId);
       const folderPath = folder?.path || '/Torrent Studio';
       const mapped = result.files.map(file => ({
