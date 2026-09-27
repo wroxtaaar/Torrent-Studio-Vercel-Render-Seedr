@@ -36,7 +36,8 @@ import {
   ExternalLink,
   Film,
   Music,
-  CheckCircle2
+  CheckCircle2,
+  Loader2
 } from 'lucide-react';
 
 import {
