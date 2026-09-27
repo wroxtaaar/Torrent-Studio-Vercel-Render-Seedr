@@ -360,6 +360,14 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             }
 
             setInspectionSource('✓ Torrent metadata loaded • Seedr is not started yet');
+            if (background) {
+              onBackgroundChange?.({
+                active: false,
+                title: 'Torrent metadata ready',
+                message: `${normalizedFiles.length} file${normalizedFiles.length === 1 ? '' : 's'} found. Open the selector when ready.`,
+                ready: true
+              });
+            }
             return;
           }
         } catch {
@@ -808,6 +816,18 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
               <textarea
                 rows={2}
                 value={magnetInput}
+                onPaste={(e) => {
+                  const pasted = e.clipboardData.getData('text').trim();
+                  if (!/^magnet:\?/i.test(pasted) && !/^[a-f0-9]{40}$/i.test(pasted)) return;
+                  e.preventDefault();
+                  setMagnetInput(pasted);
+                  setInspectedFiles([]);
+                  setInspectedHash('');
+                  setInspectedTorrentName('');
+                  setError('');
+                  setInspectionSource('Resolving torrent metadata in My Cloud Files...');
+                  void triggerInspect(pasted, true);
+                }}
                 onChange={(e) => handleInputChange(e.target.value)}
                 placeholder="Paste magnet:?xt=urn:btih:... or torrent hash"
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 placeholder-slate-500 text-xs font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition resize-none"
