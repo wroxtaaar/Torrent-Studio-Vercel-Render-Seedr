@@ -347,6 +347,11 @@ export const api = {
     };
   },
 
+  openSeedrFileDownload(fileId: string): void {
+    const url = '/api/seedr/files/' + encodeURIComponent(fileId) + '/download/direct';
+    window.open(url, '_blank', 'noopener,noreferrer');
+  },
+
   async getSeedrFileDownload(fileId: string): Promise<{ url: string; name: string }> {
     const res = await apiFetch('/api/seedr/files/' + encodeURIComponent(fileId) + '/download');
     const body = await res.text();
@@ -375,6 +380,11 @@ export const api = {
       url: streamUrl,
       externalUrl: data?.externalUrl
     };
+  },
+
+  openSeedrFolderDownload(folderId: string): void {
+    const url = '/api/seedr/folders/' + encodeURIComponent(folderId) + '/download/direct';
+    window.open(url, '_blank', 'noopener,noreferrer');
   },
 
   async getSeedrFolderDownload(folderId: string): Promise<{ url: string }> {
