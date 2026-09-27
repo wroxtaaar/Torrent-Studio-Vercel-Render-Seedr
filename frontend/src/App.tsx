@@ -694,20 +694,15 @@ export default function App() {
           try {
             const diagnostic = await api.getSeedrTokenDiagnostic();
             const checks = diagnostic?.checks || {};
-            const taskCheck = checks.tasks || {};
             const userCheck = checks.user || {};
-            const rootCheck = checks.folderRoot || {};
-            const tokenLabel =
-              taskCheck.ok || userCheck.ok
-                ? 'TOKEN_PRESENT_AND_ACCEPTED_BY_SEEDR'
-                : 'TOKEN_REJECTED_BY_SEEDR';
-            const detail = taskCheck.ok
-              ? 'Seedr task API accepted the token; the account/library check is the failing operation.'
-              : rootCheck.code === 'SEEDR_LIBRARY_ACCESS_DENIED'
-                ? 'Seedr authentication reached the API, but library access is denied.'
-                : 'Seedr rejected the token on the task/profile APIs.';
+            const tokenLabel = userCheck.ok
+              ? 'TOKEN_PRESENT_AND_ACCEPTED_BY_SEEDR'
+              : 'TOKEN_REJECTED_BY_SEEDR';
+            const detail = userCheck.ok
+              ? 'Seedr accepted the token through the account endpoint.'
+              : 'Seedr rejected the token on the account endpoint.';
             setSeedrError(
-              `${tokenLabel}: ${detail} [user=${userCheck.status ?? '?'} tasks=${taskCheck.status ?? '?'} root=${rootCheck.status ?? '?'}]`
+              `${tokenLabel}: ${detail} [user=${userCheck.status ?? '?'}]`
             );
           } catch {
             setSeedrError(
