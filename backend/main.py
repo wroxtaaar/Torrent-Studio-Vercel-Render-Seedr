@@ -23,6 +23,7 @@ APP_NAME = "Torrent Studio API"
 logger = logging.getLogger("torrent-studio")
 SEEDR_BASE = "https://www.seedr.cc/api/v0.1/p"
 SEEDR_MEDIA_BASE = "https://www.seedr.cc/api"
+SEEDR_V2_BASE = "https://v2.seedr.cc/api/v0.1/p"
 SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
 SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "").strip()
 SEEDR_MAX_SIZE_GB = float(os.getenv("SEEDR_MAX_SIZE_GB", "5"))
@@ -2438,6 +2439,53 @@ def _seedr_media_url(file_id: str, media_type: str) -> str:
         raise HTTPException(400, "Unsupported Seedr media type")
     return SEEDR_MEDIA_BASE.rstrip("/") + endpoint + "?access_token=" + quote(SEEDR_TOKEN, safe="")
 
+async def seedr_v2_request(path: str) -> Any:
+    if not SEEDR_TOKEN:
+        raise HTTPException(503, "Seedr is not configured")
+    url = SEEDR_V2_BASE.rstrip("/") + "/" + str(path).lstrip("/")
+    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+        response = await client.get(
+            url,
+            headers={"Authorization": f"Bearer {SEEDR_TOKEN}", "Accept": "application/json"},
+        )
+    raw = response.text
+    try:
+        data = response.json() if raw else None
+    except Exception:
+        data = raw
+    if response.status_code >= 400:
+        detail = raw
+        if isinstance(data, dict):
+            detail = data.get("error_description") or data.get("message") or data.get("error") or raw
+        raise HTTPException(response.status_code, str(detail or "Seedr V2 request failed"))
+    return data
+
+async def seedr_v2_video_url(file_id: str) -> str:
+    """Use Seedr V2 current presentation URL, with direct-download fallback."""
+    if not file_id:
+        return ""
+    try:
+        payload = seedr_data(await seedr_v2_request(f"/presentations/file/{quote(file_id)}/video"))
+        if isinstance(payload, dict):
+            link = payload.get("link")
+            link_url = link.get("url") if isinstance(link, dict) else ""
+            url = str(payload.get("url") or payload.get("stream_url") or link_url or "").strip()
+            if url.startswith(("http://", "https://")):
+                return url
+    except HTTPException:
+        pass
+
+    try:
+        payload = seedr_data(await seedr_v2_request(f"/download/file/{quote(file_id)}/url"))
+        if isinstance(payload, dict):
+            url = str(payload.get("url") or payload.get("download_url") or "").strip()
+            if url.startswith(("http://", "https://")):
+                return url
+    except HTTPException:
+        pass
+
+    return ""
+
 
 def _absolute_hls_uri(base_url: str, uri: str) -> str:
     absolute = urljoin(base_url, uri)
@@ -2485,9 +2533,17 @@ def _rewrite_hls_manifest(file_id: str, manifest_text: str, base_url: str) -> st
 
 
 async def _fetch_seedr_hls_manifest(file_id: str) -> tuple[str, str]:
-    upstream_url = _seedr_media_url(file_id, "video")
+    # Seedr V2 exposes the playback URL used by current clients. Prefer that
+    # presentation endpoint before falling back to the older /media/hls route.
+    upstream_url = await seedr_v2_video_url(file_id)
+    if not upstream_url:
+        upstream_url = _seedr_media_url(file_id, "video")
+
     async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
-        response = await client.get(upstream_url, headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,*/*"})
+        response = await client.get(
+            upstream_url,
+            headers={"Accept": "application/vnd.apple.mpegurl,application/x-mpegURL,*/*"},
+        )
     if response.status_code >= 400:
         detail = response.text[:500] or f"Seedr media endpoint returned HTTP {response.status_code}"
         raise HTTPException(response.status_code, detail)
@@ -2595,9 +2651,13 @@ async def seedr_file_stream(
     resolved_id = await resolve_seedr_stream_id(file_id, name)
 
     if type == "video":
+        presentation_url = await seedr_v2_video_url(resolved_id)
         return {
+            # Browser playback uses our same-origin HLS proxy, which now pulls
+            # the Seedr V2 presentation stream. Keep the direct V2 URL for
+            # external players such as VLC/MX Player.
             "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
-            "externalUrl": _seedr_media_url(resolved_id, "video"),
+            "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
             "name": name or resolved_id,
             "resolvedFileId": resolved_id,
             "protocol": "hls",
