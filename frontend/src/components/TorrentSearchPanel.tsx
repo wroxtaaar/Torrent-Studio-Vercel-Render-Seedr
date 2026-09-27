@@ -122,7 +122,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
       setSearched(true);
 
       if (data.length === 0) {
-        setError('No torrent results were returned by your configured indexers.');
+        setError('No matching torrent results were found.');
       }
     } catch (err: any) {
       setResults([]);
@@ -167,7 +167,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
             Search Torrents
           </h2>
           <p className="text-xs text-slate-400">
-            Search the torrent indexers configured in your server-side search provider.
+            Search cached torrent indexes for movies and TV. Search works independently of the Render backend.
           </p>
         </div>
 
