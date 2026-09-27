@@ -127,36 +127,64 @@ export const api = {
     createdPreview?: boolean;
     message?: string;
   }> {
-    const res = await apiFetch('/api/v2/torrents/inspect-magnet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ magnet, category })
-    });
-    const body = await res.text();
-    let data: any = null;
-    try {
-      data = body ? JSON.parse(body) : null;
-    } catch {
-      // Keep the raw qBittorrent response below.
-    }
-
-    if (!res.ok && res.status !== 202) {
-      const message =
-        data?.error ||
-        data?.message ||
-        body ||
-        `qBittorrent metadata inspection failed (HTTP ${res.status})`;
-      throw new Error(message);
-    }
-
-    return data || {
-      name: 'Torrent',
-      hash: '',
-      files: [],
-      totalSize: 0,
-      source: 'qbt_metadata_pending',
-      message: `qBittorrent is still resolving the torrent metadata (HTTP ${res.status}).`
+    const request = async () => {
+      const res = await apiFetch('/api/v2/torrents/inspect-magnet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ magnet, category })
+      });
+      const body = await res.text();
+      let data: any = null;
+      try { data = body ? JSON.parse(body) : null; } catch {}
+      return { res, data, body };
     };
+
+    const first = await request();
+    if (first.res.ok && first.res.status !== 202 && Array.isArray(first.data?.files)) {
+      return first.data;
+    }
+
+    if (first.res.status !== 202) {
+      throw new Error(
+        first.data?.error ||
+        first.data?.message ||
+        first.body ||
+        `Torrent metadata inspection failed (HTTP ${first.res.status})`
+      );
+    }
+
+    const jobId = String(first.data?.jobId || '').trim();
+    if (!jobId) {
+      throw new Error(first.data?.message || 'Torrent metadata is still resolving.');
+    }
+
+    // Keep the UI responsive while the backend resolver stays alive and
+    // benefits from its warm libtorrent session/cache.
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const res = await apiFetch(
+        '/api/v2/torrents/inspect-magnet/status?jobId=' + encodeURIComponent(jobId)
+      );
+      const body = await res.text();
+      let data: any = null;
+      try { data = body ? JSON.parse(body) : null; } catch {}
+
+      if (res.ok && Array.isArray(data?.files) && data.files.length > 0) {
+        return data;
+      }
+
+      if (!res.ok) {
+        throw new Error(
+          data?.error ||
+          data?.message ||
+          body ||
+          `Torrent metadata inspection failed (HTTP ${res.status})`
+        );
+      }
+    }
+
+    throw new Error('Torrent metadata is still resolving. Please retry in a moment.');
   },
 
   async uploadTorrentFile(file: File): Promise<{
