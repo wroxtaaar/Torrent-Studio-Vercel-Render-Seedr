@@ -111,7 +111,12 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     media.addEventListener('loadedmetadata', handleLoaded, { once: true });
 
     let hls: Hls | null = null;
-    const isHlsStream = /\.m3u8(?:$|\?)/i.test(streamUrl);
+    // Seedr's browser endpoint intentionally uses a clean same-origin
+    // path instead of exposing the upstream .m3u8 filename. Treat that
+    // endpoint as HLS explicitly.
+    const isHlsStream =
+      /\.m3u8(?:$|\?)/i.test(streamUrl) ||
+      streamUrl.includes('/api/seedr/hls/');
 
     if (isHlsStream && isVideo && Hls.isSupported()) {
       hls = new Hls({
