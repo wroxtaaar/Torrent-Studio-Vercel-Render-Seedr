@@ -443,7 +443,8 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     setInspectedFiles([]);
     setInspectionSource('');
     setError('');
-    void triggerInspect(source, true);
+    // Keep the selector open while the chosen torrent metadata loads.
+    void triggerInspect(source, false);
   }, [isOpen, initialMagnet, inspectedFiles.length, inspectedHash]);
 
   const handleInputChange = (val: string) => {
