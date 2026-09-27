@@ -2755,22 +2755,34 @@ async def seedr_file_stream(
     resolved_id = await resolve_seedr_stream_id(file_id, name)
 
     if type == "video":
-        # Prefer an HLS presentation for browsers. This explicitly supports
-        # Seedr conversion for MKV/other containers instead of handing Chrome
-        # the original container, which commonly produces media error 4.
+        # Seedr normally uses HLS for browser playback, but some presentation
+        # URLs are already directly playable by a native browser <video>.
+        # Detect that case and proxy it through our same-origin Range-aware
+        # endpoint. Keep HLS for presentations that actually return a
+        # manifest.
+        presentation_url = await seedr_v2_video_url(resolved_id)
+        if presentation_url and not await _presentation_is_hls(presentation_url):
+            return {
+                "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
+                "externalUrl": presentation_url,
+                "name": name or resolved_id,
+                "resolvedFileId": resolved_id,
+                "protocol": "direct",
+            }
+
         try:
             await _fetch_seedr_hls_manifest(resolved_id)
-            browser_url = "/api/seedr/hls/" + quote(resolved_id, safe="")
-            presentation_url = await seedr_v2_video_url(resolved_id)
             return {
-                "url": browser_url,
+                "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
                 "externalUrl": presentation_url or _seedr_media_url(resolved_id, "video"),
                 "name": name or resolved_id,
                 "resolvedFileId": resolved_id,
                 "protocol": "hls",
             }
         except HTTPException:
-            presentation_url = await seedr_v2_video_url(resolved_id)
+            # If the presentation URL exists but HLS preparation failed,
+            # still expose the direct proxy as a last resort. The browser
+            # will receive the same Seedr presentation URL we verified.
             if presentation_url:
                 return {
                     "url": "/api/seedr/media/video/" + quote(resolved_id, safe=""),
