@@ -1192,7 +1192,7 @@ export default function App() {
         ownerName: activeUser?.name || 'Admin',
         isStreamable: true,
         streamUrl: result.url,
-        downloadUrl: result.url,
+        downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
       };
 
       setActiveMediaFile(syntheticFile);
