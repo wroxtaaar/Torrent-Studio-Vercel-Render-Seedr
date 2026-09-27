@@ -566,6 +566,24 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               </div>
             </div>
           )}
+
+          {/* Stage 2: the stream URL is ready and the player is now opening it.
+              Keep this lightweight overlay visible until browser media
+              metadata arrives so the player never looks frozen/empty. */}
+          {!mediaError && trackNotice && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center pointer-events-none">
+              <div className="rounded-xl bg-slate-900/90 border border-cyan-500/20 px-5 py-4 shadow-xl">
+                <div className="flex items-center justify-center gap-2 text-cyan-300">
+                  <span className="inline-flex w-5 h-5 rounded-full border-2 border-cyan-300/30 border-t-cyan-300 animate-spin" />
+                  <span className="text-sm font-semibold">{trackNotice}</span>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  Connecting to the browser stream…
+                </p>
+              </div>
+            </div>
+          )}
+
           {isVideo ? (
             <video
               ref={videoRef}
