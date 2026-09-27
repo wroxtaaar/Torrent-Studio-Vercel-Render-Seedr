@@ -2763,8 +2763,36 @@ def build_seedr_unwanted(file_count: int, unwanted_indexes: list[int], msb_first
 
 
 @app.post("/api/seedr/tasks/add-selected")
-async def seedr_add_selected(body: dict[str, Any]):
+async def seedr_add_selected(request: Request):
     """Add a magnet to Seedr and apply/verify its unwanted-file bitmap."""
+    # Keep request parsing inside the handler instead of FastAPI's automatic
+    # dict validation. The browser normally sends JSON, but a proxy/browser
+    # edge-case that strips or changes the body should produce a clear 400
+    # rather than an opaque 422 before this endpoint can explain the problem.
+    try:
+        body = await request.json()
+    except Exception as exc:
+        content_type = str(request.headers.get("content-type") or "")
+        logger.warning(
+            "Seedr selected-file request body parse failed: content_type=%s error=%s",
+            content_type,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            400,
+            "Seedr selected-file request must contain a valid JSON object.",
+        ) from exc
+
+    if not isinstance(body, dict):
+        logger.warning(
+            "Seedr selected-file request body has invalid type: %s",
+            type(body).__name__,
+        )
+        raise HTTPException(
+            400,
+            "Seedr selected-file request body must be a JSON object.",
+        )
+
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
 
