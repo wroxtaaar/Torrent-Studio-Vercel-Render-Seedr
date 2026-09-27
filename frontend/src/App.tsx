@@ -2613,7 +2613,16 @@ export default function App() {
       {/* Floating Bottom Media Player (when minimized or active) */}
       <MediaPlayerModal
         file={activeMediaFile}
-        onClose={() => setActiveMediaFile(null)}
+        onClose={() => {
+          setActiveMediaFile(null);
+          setSeedrStreamLoadingId(null);
+        }}
+        onPlaybackStarted={() => {
+          // Stage 1 and stage 2 both end only when the browser actually
+          // starts playback. A fast stream therefore removes the spinner
+          // immediately, while a slow stream keeps it visible.
+          setSeedrStreamLoadingId(null);
+        }}
         isMinimized={isPlayerMinimized}
         onToggleMinimize={() => setIsPlayerMinimized(!isPlayerMinimized)}
       />
