@@ -27,7 +27,7 @@ SEEDR_BASE = "https://www.seedr.cc/api/v0.1/p"
 SEEDR_MEDIA_BASE = "https://www.seedr.cc/api"
 SEEDR_V2_BASE = "https://v2.seedr.cc/api/v0.1/p"
 SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
-SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "0").strip() or "0"
+SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "").strip()
 SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "episode", "web", "show", "tv"}
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
@@ -3416,33 +3416,34 @@ async def seedr_folder_download_url(folder_id: str) -> str:
     if not folder_id or not folder_id.isdigit():
         raise HTTPException(400, "Invalid Seedr folder id")
 
-    # Seedr's current API variants have exposed either a URL-producing endpoint
-    # or a direct download endpoint. Try the URL form first, then direct form.
-    for endpoint in (
-        f"/download/folder/{quote(folder_id)}/url",
-        f"/download/folder/{quote(folder_id)}",
-    ):
-        try:
-            payload = seedr_data(await seedr_request(endpoint))
-        except HTTPException as exc:
-            if exc.status_code in (400, 404, 405):
-                continue
-            raise
+    # Known-good Torrent Studio implementation:
+    # initialize a temporary archive and let Seedr return the signed URL.
+    archive_id = str(uuid.uuid4())
+    payload = seedr_data(
+        await seedr_request(
+            f"/download/archive/init/{quote(archive_id)}",
+            "PUT",
+            {"archive_arr": [{"type": "folder", "id": int(folder_id)}]},
+        )
+    )
 
-        if isinstance(payload, dict):
-            url = str(
-                payload.get("url")
-                or payload.get("download_url")
-                or payload.get("downloadUrl")
-                or payload.get("direct_url")
-                or ""
-            ).strip()
-            if url:
-                return url
-        elif isinstance(payload, str) and payload.strip().startswith(("http://", "https://")):
-            return payload.strip()
+    if isinstance(payload, dict):
+        url = str(
+            payload.get("url")
+            or payload.get("download_url")
+            or payload.get("downloadUrl")
+            or payload.get("signed_url")
+            or payload.get("signedUrl")
+            or ""
+        ).strip()
+    elif isinstance(payload, str):
+        url = payload.strip()
+    else:
+        url = ""
 
-    raise HTTPException(502, "Seedr did not return a folder download URL")
+    if not url:
+        raise HTTPException(502, "Seedr did not return a folder download URL")
+    return url
 
 
 @app.get("/api/seedr/folders/{folder_id}/download/url")
