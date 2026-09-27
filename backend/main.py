@@ -2488,17 +2488,22 @@ async def seedr_quota():
         storage = result.get("account", {}).get("storage", {}) if isinstance(result, dict) else {}
         if not isinstance(storage, dict):
             storage = result.get("storage", {}) if isinstance(result, dict) else {}
+        result_dict = result if isinstance(result, dict) else {}
         max_space = int(float(
             storage.get("limit")
             or storage.get("max_space")
             or storage.get("maxSpace")
-            or result.get("max_space", 0) if isinstance(result, dict) else 0
+            or result_dict.get("max_space", 0)
+            or result_dict.get("space_max", 0)
+            or 0
         ))
         used = int(float(
             storage.get("used")
             or storage.get("used_space")
             or storage.get("usedSpace")
-            or result.get("used_space", 0) if isinstance(result, dict) else 0
+            or result_dict.get("used_space", 0)
+            or result_dict.get("space_used", 0)
+            or 0
         ))
     except SeedrError:
         raise
