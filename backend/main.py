@@ -24,6 +24,7 @@ SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
 SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "").strip()
 SEEDR_MAX_SIZE_GB = float(os.getenv("SEEDR_MAX_SIZE_GB", "5"))
 SEEDR_MAX_SIZE_BYTES = int(SEEDR_MAX_SIZE_GB * 1024**3)
+SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "episode", "web", "show", "tv"}
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
 SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "8.5"))
@@ -1125,12 +1126,13 @@ async def search_knaben(query: str, limit: int = 100) -> list[dict[str, Any]]:
 
 
 
-async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
-    """Fast media search across direct sources plus cached multi-indexer coverage."""
+async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Known-good broad Knaben search path used by the previous Vercel search API."""
     query = query.strip()
     if not query:
         return []
 
+    limit = min(max(int(limit or 50), 1), 50)
     cache_key = (re.sub(r"\s+", " ", query).lower(), limit)
     now = asyncio.get_running_loop().time()
     cached = _search_cache.get(cache_key)
@@ -1138,156 +1140,116 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
         return cached[1]
 
     normalized_query, season, episode = _media_search_parts(query)
+    normalized_query = normalized_query or query
+    target_tokens = [
+        token for token in _search_tokens(normalized_query)
+        if token not in SEARCH_STOPWORDS
+    ]
 
-    async def bounded(coro: Any) -> list[dict[str, Any]]:
-        try:
-            value = await asyncio.wait_for(coro, timeout=SEARCH_SOURCE_TIMEOUT_SECONDS)
-            return value if isinstance(value, list) else []
-        except (asyncio.TimeoutError, httpx.HTTPError, ValueError):
-            return []
-        except Exception as exc:
-            logger.info("Search source failed: %s", exc)
-            return []
+    try:
+        async with httpx.AsyncClient(timeout=8.5, follow_redirects=True) as client:
+            response = await client.post(
+                KNABEN_API_URL,
+                json={
+                    "search_type": "100%",
+                    "search_field": "title",
+                    "query": normalized_query,
+                    "order_by": "seeders",
+                    "order_direction": "desc",
+                    "from": 0,
+                    "size": 300,
+                    "hide_unsafe": True,
+                    "hide_xxx": True,
+                    "seconds_since_last_seen": 604800,
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.info("Knaben search failed: %s", exc)
+        return []
 
-    async def aggregate_search() -> list[dict[str, Any]]:
-        aggregate_query = normalized_query or query
-        try:
-            async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
-                response = await client.post(
-                    f"{TORRENT_SEARCH_API_URL}/torrent/search",
-                    params={
-                        "query": aggregate_query,
-                        "max_items": 100,
-                        "per_source": 25,
-                    },
-                    headers={"Accept": "application/json"},
-                )
-                response.raise_for_status()
-                payload = response.json()
-                return payload if isinstance(payload, list) else []
-        except (httpx.HTTPError, ValueError):
-            return []
+    hits = payload.get("hits") if isinstance(payload, dict) else []
+    if not isinstance(hits, list):
+        return []
 
-    # Knaben is the main fast multi-source layer. Direct 1337x remains useful
-    # when Render can reach the site, while YTS/EZTV supply structured media data.
-    knaben_task = bounded(search_knaben(query, limit=max(limit * 2, 50)))
-    x1337_task = bounded(search_1337x_direct(query, limit=min(max(limit, 20), 30)))
-    tv_task = bounded(search_tv_eztv(query, limit=50))
-    movie_task = bounded(search_yts_movies(normalized_query, limit=50))
-    aggregate_task = bounded(aggregate_search())
+    target_text = _normalize_title(normalized_query)
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
-    knaben_results, x1337_results, tv_results, movie_results, aggregate_payload = await asyncio.gather(
-        knaben_task,
-        x1337_task,
-        tv_task,
-        movie_task,
-        aggregate_task,
-    )
-
-    tokens = _search_tokens(normalized_query)
-
-    # Keep aggregate candidates strictly media-focused and title-relevant.
-    aggregate_items: list[dict[str, Any]] = []
-    for item in aggregate_payload:
-        if not isinstance(item, dict):
+    for hit in hits:
+        if not isinstance(hit, dict):
             continue
-        title = str(item.get("filename") or item.get("title") or "")
-        category = str(item.get("category") or "").lower()
-        normalized_title = _normalize_title(title)
-        if tokens and not all(token in normalized_title for token in tokens):
+
+        title = str(hit.get("title") or "").strip()
+        category = str(hit.get("category") or "").strip()
+        if not title:
+            continue
+
+        title_tokens = set(_search_tokens(title))
+        if target_tokens and not all(token in title_tokens for token in target_tokens):
+            continue
+
+        category_lower = category.lower()
+        if category_lower and any(
+            blocked in category_lower
+            for blocked in ("anime", "games", "music", "software", "books", "porn", "xxx", "adult")
+        ):
+            continue
+        if category_lower and not any(
+            allowed in category_lower
+            for allowed in ("video", "movie", "tv", "television", "series")
+        ):
             continue
         if season is not None and not _season_episode_match(title, season, episode):
             continue
-        if category and any(
-            blocked in category
-            for blocked in ("anime", "games", "music", "software", "books")
-        ):
+
+        magnet = str(hit.get("magnetUrl") or "").strip()
+        hash_value = str(hit.get("hash") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", hash_value):
+            hash_value = info_hash(magnet)
+
+        key = hash_value or magnet or str(hit.get("id") or title)
+        if key in seen:
             continue
-        if category and not any(
-            allowed in category for allowed in ("video", "movie", "tv")
-        ):
-            continue
-        aggregate_items.append(item)
-
-    payload_items = (
-        list(knaben_results)
-        + list(x1337_results)
-        + list(tv_results)
-        + list(movie_results)
-        + aggregate_items
-    )
-
-    results: list[dict[str, Any]] = []
-    seen_hashes: set[str] = set()
-    max_candidates = max(limit * 8, 100)
-
-    for item in payload_items[:max_candidates]:
-        if not isinstance(item, dict):
-            continue
-
-        filename = str(item.get("filename") or item.get("title") or "").strip()
-        if not filename:
-            continue
-
-        magnet = str(item.get("magnet_link") or item.get("magnetUrl") or "").strip()
-        item_hash = info_hash(magnet) or str(
-            item.get("infoHash") or item.get("hash") or item.get("id") or ""
-        ).strip().lower()
-
-        if item_hash and item_hash in seen_hashes:
-            continue
-        if item_hash:
-            seen_hashes.add(item_hash)
-
-        size_value = item.get("size", 0)
-        size = (
-            int(size_value)
-            if isinstance(size_value, (int, float))
-            else parse_size(str(size_value))
-        )
-
-        source = str(
-            item.get("indexer") or item.get("source") or "torrent-search"
-        ).strip()
+        seen.add(key)
 
         results.append({
-            "guid": str(item.get("guid") or item.get("id") or ""),
-            "title": filename,
-            "size": size,
-            "seeders": int(item.get("seeders") or 0),
-            "leechers": int(item.get("leechers") or 0),
-            "indexer": source,
-            "category": str(item.get("category") or ""),
+            "guid": f"knaben-{str(hit.get('id') or hash_value or title)}",
+            "title": title,
+            "size": int(hit.get("bytes") or 0),
+            "seeders": int(hit.get("seeders") or 0),
+            "leechers": int(hit.get("peers") or 0),
+            "indexer": str(hit.get("cachedOrigin") or hit.get("tracker") or "Knaben").strip(),
             "protocol": "torrent",
-            "publishDate": str(
-                item.get("publishDate") or item.get("date") or ""
-            ),
+            "publishDate": str(hit.get("date") or ""),
+            "infoHash": hash_value if re.fullmatch(r"[0-9a-f]{40}", hash_value, re.I) else "",
             "magnetUrl": magnet or None,
-            "infoHash": item_hash if re.fullmatch(r"[0-9a-f]{40}", item_hash, re.I) else "",
             "downloadUrl": magnet or None,
-            "infoUrl": str(item.get("infoUrl") or item.get("page_url") or ""),
-            "sourceUrl": str(item.get("sourceUrl") or item.get("page_url") or ""),
+            "infoUrl": str(hit.get("details") or ""),
+            "sourceUrl": str(hit.get("details") or ""),
+            "category": category,
         })
 
-        if len(results) >= limit:
-            break
+    results.sort(
+        key=lambda item: (
+            1 if " ".join(_search_tokens(item["title"])) == target_text else 0,
+            int(item.get("seeders") or 0),
+        ),
+        reverse=True,
+    )
 
+    results = results[:limit]
     _search_cache[cache_key] = (now, results)
-    # Keep the in-memory cache bounded.
     if len(_search_cache) > 100:
         oldest = min(_search_cache.items(), key=lambda pair: pair[1][0])[0]
         _search_cache.pop(oldest, None)
 
-    logger.info(
-        "Search '%s': %d results (Knaben=%d, 1337x=%d, EZTV=%d, YTS=%d, aggregate=%d)",
-        query,
-        len(results),
-        len(knaben_results),
-        len(x1337_results),
-        len(tv_results),
-        len(movie_results),
-        len(aggregate_items),
-    )
+    logger.info("Search '%s': %d results from broad Knaben path", query, len(results))
     return results
 
 def parse_size(value: str) -> int:
