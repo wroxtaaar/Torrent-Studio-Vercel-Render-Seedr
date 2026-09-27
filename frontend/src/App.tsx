@@ -302,8 +302,6 @@ export default function App() {
         '';
 
       const activeName =
-        seedrNotice.folderName?.trim() ||
-        seedrNotice.files.find(file => file.folderPath)?.folderPath.split('/').filter(Boolean).pop()?.trim() ||
         seedrNotice.name?.trim() ||
         'Seedr download';
 
@@ -530,16 +528,27 @@ export default function App() {
           const progress = Math.max(0, Math.min(100, Number(progressResult.progress) || 0));
           const progressName = String(progressResult.name || '').trim();
           const progressFolderId = String(progressResult.folderId || '').trim();
-          if (progressFolderId && progressName && progressName !== 'Waiting for Seedr metadata…') {
-            rememberSeedrTorrentName(progressFolderId, progressName);
-          }
-          setSeedrNotice(prev => prev ? {
-            ...prev,
-            name: progressName || prev.name,
-            folderId: progressFolderId || prev.folderId || '',
-            status: progressResult.status,
-            progress,
-          } : null);
+          setSeedrNotice(prev => {
+            if (!prev) return null;
+
+            const canonicalName = String(prev.name || '').trim() || progressName;
+            if (
+              progressFolderId &&
+              canonicalName &&
+              canonicalName !== 'Waiting for torrent name…' &&
+              canonicalName !== 'Waiting for Seedr metadata…'
+            ) {
+              rememberSeedrTorrentName(progressFolderId, canonicalName);
+            }
+
+            return {
+              ...prev,
+              name: canonicalName,
+              folderId: progressFolderId || prev.folderId || '',
+              status: progressResult.status,
+              progress,
+            };
+          });
         }).catch(() => {
           // The normal task poll continues to provide progress updates.
         });
@@ -841,7 +850,7 @@ export default function App() {
 
         setSeedrNotice({
           taskId: result.seedrTaskId ?? null,
-          name: (() => {
+          name: String(torrentName || '').trim() || (() => {
             const response: any = result.seedrResponse;
             const responseName = String(
               response?.name ??
@@ -857,14 +866,9 @@ export default function App() {
               return selectedManifest[0].name + ` + ${selectedManifest.length - 1} more`;
             }
 
-            return 'Waiting for Seedr metadata…';
+            return 'Waiting for torrent name…';
           })(),
-          folderName: String(
-            (result as any).seedrFolderName ??
-            torrentName ??
-            ''
-          ).trim(),
-          folderId: String((result as any).seedrFolderId ?? '').trim(),
+          folderName: '',
           status: 'waiting',
           progress: 0,
           downloadUrl: null,
@@ -973,10 +977,23 @@ export default function App() {
 
       setSeedrNotice(prev => {
         if (!prev) return null;
+
+        const canonicalName = String(prev.name || '').trim() || String(result.name || '').trim();
+        const resolvedFolderId = String(result.folderId || prev.folderId || '').trim();
+
+        if (
+          resolvedFolderId &&
+          canonicalName &&
+          canonicalName !== 'Waiting for torrent name…' &&
+          canonicalName !== 'Waiting for Seedr metadata…'
+        ) {
+          rememberSeedrTorrentName(resolvedFolderId, canonicalName);
+        }
+
         return {
           ...prev,
-          name: String(result.name || prev.name),
-          folderId: String(result.folderId || prev.folderId || '').trim(),
+          name: canonicalName,
+          folderId: resolvedFolderId,
           status: completed ? 'completed' : result.status,
           progress: completed ? 100 : progress,
         };
@@ -1021,25 +1038,32 @@ export default function App() {
           if (!prev) return null;
 
           const resolvedFolderId = String(
+            (result as any).folderId ||
             progressResult.folderId ||
             prev.folderId ||
             ''
           ).trim();
-          const resolvedTorrentName = String(
-            progressResult.name ||
+          const canonicalName = String(
             prev.name ||
+            (result as any).name ||
+            progressResult.name ||
             ''
           ).trim();
 
-          if (resolvedFolderId && resolvedTorrentName && resolvedTorrentName !== 'Waiting for Seedr metadata…') {
-            rememberSeedrTorrentName(resolvedFolderId, resolvedTorrentName);
+          if (
+            resolvedFolderId &&
+            canonicalName &&
+            canonicalName !== 'Waiting for torrent name…' &&
+            canonicalName !== 'Waiting for Seedr metadata…'
+          ) {
+            rememberSeedrTorrentName(resolvedFolderId, canonicalName);
           }
 
           return {
             ...prev,
-            name: String((result as any).name || prev.name),
-            folderName: String((result as any).folderName || prev.folderName || (result as any).name || prev.name).trim(),
-            folderId: String((result as any).folderId || prev.folderId || '').trim(),
+            name: canonicalName,
+            folderName: '',
+            folderId: resolvedFolderId,
             status: 'completed',
             progress: 100,
             downloadUrl: result.downloadUrl,
