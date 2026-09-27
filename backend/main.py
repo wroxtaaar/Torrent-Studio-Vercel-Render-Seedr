@@ -37,6 +37,11 @@ SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS",
 SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
 TORRENT_METADATA_CACHE_FILE = Path(os.getenv("TORRENT_METADATA_CACHE_FILE", "/app/.torrent_metadata_cache.json"))
 TORRENT_METADATA_JOB_TIMEOUT_SECONDS = float(os.getenv("TORRENT_METADATA_JOB_TIMEOUT_SECONDS", "60"))
+TORRENT_METADATA_ITORRENTS_BASE_URL = os.getenv("TORRENT_METADATA_ITORRENTS_BASE_URL", "https://itorrents.net/torrent").rstrip("/")
+TORRENT_METADATA_ITORRENTS_TIMEOUT_SECONDS = float(os.getenv("TORRENT_METADATA_ITORRENTS_TIMEOUT_SECONDS", "5"))
+TORRENT_METADATA_BACKGROUND_TTL_SECONDS = float(os.getenv("TORRENT_METADATA_BACKGROUND_TTL_SECONDS", str(6 * 60 * 60)))
+TORRENT_METADATA_BACKGROUND_RETRY_SECONDS = float(os.getenv("TORRENT_METADATA_BACKGROUND_RETRY_SECONDS", "30"))
+TORRENT_METADATA_JOB_RETENTION_SECONDS = float(os.getenv("TORRENT_METADATA_JOB_RETENTION_SECONDS", str(60 * 60)))
 _search_cache: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
 
 # Rolling server-side byte counters for browser media streams. This is more
@@ -190,6 +195,39 @@ def _save_metadata_cache() -> None:
         tmp.replace(TORRENT_METADATA_CACHE_FILE)
     except Exception as exc:
         logger.info("Metadata cache save skipped: %s", exc)
+
+
+async def _fetch_itorrents_metadata(info_hash_value: str) -> dict[str, Any] | None:
+    """Try the public iTorrents descriptor cache before network metadata discovery."""
+    target = info_hash_value.strip().lower()
+    if not TORRENT_METADATA_ITORRENTS_BASE_URL or not re.fullmatch(r"[0-9a-f]{40}", target):
+        return None
+
+    url = f"{TORRENT_METADATA_ITORRENTS_BASE_URL}/{target}.torrent"
+    try:
+        async with httpx.AsyncClient(
+            timeout=TORRENT_METADATA_ITORRENTS_TIMEOUT_SECONDS,
+            follow_redirects=True,
+            headers={"User-Agent": "Torrent-Studio/1.0"},
+        ) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                return None
+            body = response.content
+    except httpx.HTTPError as exc:
+        logger.info("iTorrents cache lookup failed for %s: %s", target, exc)
+        return None
+
+    if len(body) > 8 * 1024 * 1024 or not body.startswith(b"d") or b"4:info" not in body:
+        return None
+
+    try:
+        result = _metadata_from_torrent_bytes(body, target, "itorrents_cache")
+    except (ValueError, TypeError) as exc:
+        logger.info("iTorrents returned invalid metadata for %s: %s", target, exc)
+        return None
+    logger.info("Metadata cache hit for %s via iTorrents", target)
+    return result
 
 
 async def _fetch_source_torrent_descriptor(source_url: str, info_hash_value: str) -> dict[str, Any] | None:
@@ -423,10 +461,28 @@ def _metadata_from_libtorrent_sync(magnet: str, info_hash_value: str) -> dict[st
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+async def _schedule_metadata_job_expiry(job_id: str) -> None:
+    try:
+        await asyncio.sleep(TORRENT_METADATA_JOB_RETENTION_SECONDS)
+    except asyncio.CancelledError:
+        return
+    job = _metadata_jobs.get(job_id)
+    if job and job.get("status") in {"ready", "error"}:
+        _metadata_jobs.pop(job_id, None)
+
+
 async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> None:
-    """Resolve metadata in parallel so a slow DHT lookup cannot block a faster resolver."""
+    """Keep retrying independent metadata sources for up to the configured background TTL."""
     job = _metadata_jobs[job_id]
-    job["status"] = "resolving"
+    started_at = float(job.get("startedAt") or time.time())
+    deadline_at = float(job.get("deadlineAt") or (started_at + TORRENT_METADATA_BACKGROUND_TTL_SECONDS))
+    job.update({
+        "status": "resolving",
+        "startedAt": started_at,
+        "updatedAt": time.time(),
+        "deadlineAt": deadline_at,
+        "rounds": int(job.get("rounds") or 0),
+    })
 
     async def resolve_libtorrent() -> dict[str, Any] | None:
         session = await _get_libtorrent_session()
@@ -436,49 +492,95 @@ async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> N
             info_hash_value,
         )
 
-    remote_task = asyncio.create_task(
-        _fetch_remote_torrent_metadata(magnet, info_hash_value)
-    )
-    knaben_task = asyncio.create_task(_lookup_knaben_by_hash(info_hash_value))
-    libtorrent_task = asyncio.create_task(resolve_libtorrent())
+    while time.time() < deadline_at:
+        job["rounds"] = int(job.get("rounds") or 0) + 1
+        job["updatedAt"] = time.time()
 
-    tasks = (remote_task, knaben_task, libtorrent_task)
-    errors: list[str] = []
-    try:
-        # Race independent metadata sources. This is important on Render:
-        # DHT may have zero peers while the public metadata service or an
-        # indexer already has the same torrent cached.
-        for task in asyncio.as_completed(tasks):
-            try:
-                result = await task
-            except TimeoutError as exc:
-                errors.append(str(exc))
-                continue
-            except Exception as exc:
-                errors.append(str(exc))
-                continue
+        # Shared public cache is the fastest path and costs no torrent peer work.
+        cached_result = await _fetch_itorrents_metadata(info_hash_value)
+        if cached_result:
+            job.update({
+                "status": "ready",
+                "result": cached_result,
+                "error": None,
+                "updatedAt": time.time(),
+            })
+            logger.info("Metadata job %s resolved via iTorrents cache on round %s", job_id, job["rounds"])
+            asyncio.create_task(_schedule_metadata_job_expiry(job_id))
+            return
 
-            if result and isinstance(result, dict) and result.get("files"):
-                _metadata_cache[info_hash_value.lower()] = result
+        remote_task = asyncio.create_task(
+            _fetch_remote_torrent_metadata(magnet, info_hash_value)
+        )
+        knaben_task = asyncio.create_task(_lookup_knaben_by_hash(info_hash_value))
+        libtorrent_task = asyncio.create_task(resolve_libtorrent())
+        tasks = (remote_task, knaben_task, libtorrent_task)
+        errors: list[str] = []
+        winner: dict[str, Any] | None = None
+
+        try:
+            # Race the independent remote/indexer/libtorrent paths. The first
+            # usable file list wins; the libtorrent worker finishes before a
+            # retry round begins so the same torrent is never added twice.
+            for task in asyncio.as_completed(tasks):
+                try:
+                    result = await task
+                except TimeoutError as exc:
+                    errors.append(str(exc))
+                    continue
+                except Exception as exc:
+                    errors.append(str(exc))
+                    continue
+                if result and isinstance(result, dict) and result.get("files"):
+                    winner = result
+                    break
+
+            if winner:
+                _metadata_cache[info_hash_value.lower()] = winner
                 _save_metadata_cache()
-                job.update({"status": "ready", "result": result, "error": None})
+                job.update({
+                    "status": "ready",
+                    "result": winner,
+                    "error": None,
+                    "updatedAt": time.time(),
+                })
                 logger.info(
-                    "Metadata job %s resolved via %s",
+                    "Metadata job %s resolved via %s on round %s",
                     job_id,
-                    result.get("source", "unknown"),
+                    winner.get("source", "unknown"),
+                    job["rounds"],
                 )
                 return
+        finally:
+            for task in (remote_task, knaben_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(remote_task, knaben_task, return_exceptions=True)
 
-        message = errors[-1] if errors else "No metadata resolver returned a file list."
-        job.update({"status": "error", "error": message})
-        logger.warning("Metadata job %s failed: %s", job_id, message)
-    finally:
-        # The local libtorrent thread may continue after another resolver wins;
-        # keep the shared session alive rather than cancelling it mid-operation.
-        # Cancel only outstanding HTTP/indexer requests.
-        for task in (remote_task, knaben_task):
-            if not task.done():
-                task.cancel()
+            # asyncio.to_thread cannot force-stop the libtorrent worker. Wait for
+            # this attempt to finish so later retry rounds do not overlap it.
+            try:
+                await libtorrent_task
+            except Exception as exc:
+                errors.append(str(exc))
+
+        if time.time() >= deadline_at:
+            break
+        delay = min(
+            max(0, TORRENT_METADATA_BACKGROUND_RETRY_SECONDS),
+            max(0, deadline_at - time.time()),
+        )
+        job["updatedAt"] = time.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    job.update({
+        "status": "error",
+        "error": "Torrent metadata could not be resolved within 6 hours.",
+        "updatedAt": time.time(),
+    })
+    logger.warning("Metadata job %s exhausted its background deadline", job_id)
+    asyncio.create_task(_schedule_metadata_job_expiry(job_id))
 
 
 _load_metadata_cache()
@@ -3543,6 +3645,12 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
     if cached:
         return cached
 
+    # Shared public cache is the fastest metadata path for both pasted magnets
+    # and search results. It never starts Seedr or requests payload pieces.
+    cached_descriptor = await _fetch_itorrents_metadata(h)
+    if cached_descriptor:
+        return cached_descriptor
+
     # Search results can carry a detail URL. When that page exposes a real
     # .torrent descriptor, use it before touching DHT/trackers.
     descriptor_url = str(body.get("descriptorUrl") or "").strip()
@@ -3573,10 +3681,16 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
         return existing["result"]
 
     if not existing or existing.get("status") == "error":
+        now = time.time()
         _metadata_jobs[job_id] = {
             "status": "queued",
+            "jobId": job_id,
             "hash": h,
-            "startedAt": time.time(),
+            "name": str(parse_qs(urlsplit(magnet).query).get("dn", [""])[0] or "").strip(),
+            "startedAt": now,
+            "updatedAt": now,
+            "deadlineAt": now + TORRENT_METADATA_BACKGROUND_TTL_SECONDS,
+            "rounds": 0,
             "error": None,
         }
         asyncio.create_task(_run_metadata_job(job_id, magnet, h))
@@ -3603,6 +3717,39 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
     )
 
 
+@app.get("/api/v2/torrents/metadata-jobs")
+async def seedr_metadata_jobs():
+    now = time.time()
+    jobs: list[dict[str, Any]] = []
+    for job in _metadata_jobs.values():
+        started = float(job.get("startedAt") or now)
+        deadline = float(job.get("deadlineAt") or started)
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        files = result.get("files") if isinstance(result.get("files"), list) else []
+        jobs.append({
+            "jobId": str(job.get("jobId") or job.get("hash") or ""),
+            "hash": str(job.get("hash") or "").lower(),
+            "name": str(job.get("name") or result.get("name") or "").strip(),
+            "status": str(job.get("status") or "resolving"),
+            "rounds": int(job.get("rounds") or 0),
+            "startedAt": started,
+            "updatedAt": float(job.get("updatedAt") or started),
+            "deadlineAt": deadline,
+            "elapsedSeconds": max(0, int(now - started)),
+            "remainingSeconds": max(0, int(deadline - now)),
+            "fileCount": len(files),
+            "totalSize": int(result.get("totalSize") or 0),
+            "source": str(result.get("source") or "background_metadata"),
+            "error": str(job.get("error") or "") or None,
+        })
+    jobs.sort(key=lambda item: float(item.get("startedAt") or 0), reverse=True)
+    return {
+        "jobs": jobs,
+        "backgroundTtlSeconds": TORRENT_METADATA_BACKGROUND_TTL_SECONDS,
+        "retentionSeconds": TORRENT_METADATA_JOB_RETENTION_SECONDS,
+    }
+
+
 @app.get("/api/v2/torrents/inspect-magnet/status")
 async def seedr_inspect_magnet_status(jobId: str = Query(...)):
     job = _metadata_jobs.get(jobId.lower())
@@ -3618,12 +3765,22 @@ async def seedr_inspect_magnet_status(jobId: str = Query(...)):
     if job.get("status") == "error":
         raise HTTPException(502, str(job.get("error") or "Metadata lookup failed"))
 
+    now = time.time()
+    started = float(job.get("startedAt") or now)
+    deadline = float(job.get("deadlineAt") or started)
     return {
         "status": "resolving",
         "jobId": jobId,
         "hash": jobId,
-        "source": "libtorrent_metadata",
-        "message": job.get("error") or "Torrent metadata is still resolving. Seedr has not been started.",
+        "name": str(job.get("name") or ""),
+        "rounds": int(job.get("rounds") or 0),
+        "startedAt": started,
+        "updatedAt": float(job.get("updatedAt") or started),
+        "deadlineAt": deadline,
+        "elapsedSeconds": max(0, int(now - started)),
+        "remainingSeconds": max(0, int(deadline - now)),
+        "source": "background_metadata",
+        "message": job.get("error") or "Torrent metadata is still resolving in the background. Seedr has not been started.",
     }
 
 
