@@ -11,7 +11,7 @@ import httpx
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
@@ -1633,6 +1633,59 @@ async def seedr_files():
 @app.get("/api/seedr/files/{file_id}/download")
 async def seedr_file_download(file_id: str):
     return await download_url(file_id)
+
+
+@app.get("/api/seedr/files/{file_id}/download/direct")
+async def seedr_file_download_direct(file_id: str):
+    """Redirect the browser directly to Seedr's short-lived download URL."""
+    result = await download_url(file_id)
+    return RedirectResponse(url=result["url"], status_code=307)
+
+
+async def seedr_folder_download_url(folder_id: str) -> str:
+    folder_id = str(folder_id or "").strip()
+    if not folder_id or not folder_id.isdigit():
+        raise HTTPException(400, "Invalid Seedr folder id")
+
+    # Seedr's current API variants have exposed either a URL-producing endpoint
+    # or a direct download endpoint. Try the URL form first, then direct form.
+    for endpoint in (
+        f"/download/folder/{quote(folder_id)}/url",
+        f"/download/folder/{quote(folder_id)}",
+    ):
+        try:
+            payload = seedr_data(await seedr_request(endpoint))
+        except HTTPException as exc:
+            if exc.status_code in (400, 404, 405):
+                continue
+            raise
+
+        if isinstance(payload, dict):
+            url = str(
+                payload.get("url")
+                or payload.get("download_url")
+                or payload.get("downloadUrl")
+                or payload.get("direct_url")
+                or ""
+            ).strip()
+            if url:
+                return url
+        elif isinstance(payload, str) and payload.strip().startswith(("http://", "https://")):
+            return payload.strip()
+
+    raise HTTPException(502, "Seedr did not return a folder download URL")
+
+
+@app.get("/api/seedr/folders/{folder_id}/download")
+async def seedr_folder_download(folder_id: str):
+    url = await seedr_folder_download_url(folder_id)
+    return {"url": url}
+
+
+@app.get("/api/seedr/folders/{folder_id}/download/direct")
+async def seedr_folder_download_direct(folder_id: str):
+    url = await seedr_folder_download_url(folder_id)
+    return RedirectResponse(url=url, status_code=307)
 
 # HLS stream sources are kept server-side. The browser receives a same-origin
 # manifest URL so the Seedr access token never needs to be exposed to the client.
