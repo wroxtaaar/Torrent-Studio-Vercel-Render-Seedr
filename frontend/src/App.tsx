@@ -1287,12 +1287,15 @@ export default function App() {
   };
 
 
-  const handleDownloadSeedrFolder = async (folderId: string) => {
+  const handleDownloadSeedrFolder = async (folderId: string, folderName = '') => {
     try {
       // Open the navigation synchronously from the click so the browser never
-      // treats it as an async popup. The backend follows through to Seedr's
-      // short-lived download URL.
-      api.openSeedrFolderDownload(folderId);
+      // treats it as an async popup. The backend supplies Content-Disposition
+      // with the requested filename.
+      const zipName = folderName && !folderName.toLowerCase().endsWith('.zip')
+        ? folderName + '.zip'
+        : folderName;
+      api.openSeedrFolderDownload(folderId, zipName);
     } catch (error) {
       console.error('Failed to start Seedr folder download:', error);
       setSeedrError(error instanceof Error ? error.message : 'Failed to start Seedr folder download');
@@ -1313,11 +1316,11 @@ export default function App() {
     }
   };
 
-  const handleDownloadSeedrFile = async (fileId: string) => {
+  const handleDownloadSeedrFile = async (fileId: string, fileName = '') => {
     try {
-      // Start the browser navigation synchronously; backend returns a 307 to
-      // Seedr's actual file URL.
-      api.openSeedrFileDownload(fileId);
+      // Start the browser navigation synchronously; backend streams the Seedr
+      // file with Content-Disposition preserving the real filename/extension.
+      api.openSeedrFileDownload(fileId, fileName);
     } catch (error) {
       console.error('Failed to start Seedr download:', error);
       setSeedrError(error instanceof Error ? error.message : 'Failed to start Seedr download');
@@ -1896,7 +1899,7 @@ export default function App() {
                                 <div className="flex items-center gap-1.5 shrink-0">
                                   <button
                                     type="button"
-                                    onClick={() => handleDownloadSeedrFolder(folder.folderId)}
+                                    onClick={() => handleDownloadSeedrFolder(folder.folderId, folder.name)}
                                     className="px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
                                   >
                                     Download
@@ -1992,7 +1995,7 @@ export default function App() {
                                   )}
                                   <button
                                     type="button"
-                                    onClick={() => handleDownloadSeedrFile(file.id)}
+                                    onClick={() => handleDownloadSeedrFile(file.id, file.name)}
                                     className="px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
                                   >
                                     Download
