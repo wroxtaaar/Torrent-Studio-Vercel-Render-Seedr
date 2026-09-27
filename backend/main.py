@@ -426,6 +426,11 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
                 params={"query": query, "max_items": limit, "per_source": 15},
                 headers={"Accept": "application/json"},
             )
+
+        try:
+            tv_results = await search_tv_eztv(query, limit=30)
+        except Exception:
+            tv_results = []
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"Torrent search service unavailable: {exc}") from exc
 
@@ -444,14 +449,42 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         raise HTTPException(502, "Torrent search service returned an invalid result set")
 
+    if tv_results:
+        # When an exact TV show is identified, suppress aggregate results that
+        # do not contain every title token. The show-specific EZTV releases
+        # remain authoritative for that TV title.
+        tokens = _search_tokens(_tvmaze_query(query))
+        aggregate = [
+            item for item in payload
+            if isinstance(item, dict)
+            and all(
+                token in _normalize_title(
+                    str(item.get("filename") or item.get("title") or "")
+                )
+                for token in tokens
+            )
+        ]
+        payload_items = tv_results + aggregate
+    else:
+        payload_items = payload
+
     results: list[dict[str, Any]] = []
-    for item in payload[:limit]:
+    seen_hashes: set[str] = set()
+    for item in payload_items[: max(limit * 4, 50)]:
         if not isinstance(item, dict):
             continue
 
         filename = str(item.get("filename") or item.get("title") or "").strip()
         if not filename:
             continue
+
+        item_hash = info_hash(
+            str(item.get("magnet_link") or item.get("magnetUrl") or "")
+        ) or str(item.get("id") or "").strip()
+        if item_hash and item_hash in seen_hashes:
+            continue
+        if item_hash:
+            seen_hashes.add(item_hash)
 
         magnet = str(item.get("magnet_link") or item.get("magnetUrl") or "").strip()
         source = str(item.get("source") or "torrent-search").strip()
