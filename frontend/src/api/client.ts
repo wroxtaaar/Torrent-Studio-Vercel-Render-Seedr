@@ -401,6 +401,27 @@ export const api = {
     if (!res.ok) throw new Error(data?.error || body || 'Failed to delete Seedr file');
   },
 
+  async getSeedrTaskProgress(taskId: number | string): Promise<{
+    taskId: number | string;
+    name?: string;
+    folderId?: string;
+    status: 'waiting' | 'downloading' | 'completed' | 'not_found';
+    progress: number;
+  }> {
+    const res = await apiFetch('/api/seedr/tasks/' + encodeURIComponent(String(taskId)) + '/progress');
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch { data = null; }
+    if (!res.ok) throw new Error(data?.error || body || 'Failed to check Seedr task progress');
+    return {
+      taskId: data?.taskId ?? taskId,
+      name: typeof data?.name === 'string' ? data.name : '',
+      folderId: typeof data?.folderId === 'string' ? data.folderId : '',
+      status: data?.status || 'downloading',
+      progress: Math.max(0, Math.min(100, Number(data?.progress) || 0)),
+    };
+  },
+
   async getSeedrTask(taskId: number | string): Promise<{
     taskId: number | string;
     name?: string;
