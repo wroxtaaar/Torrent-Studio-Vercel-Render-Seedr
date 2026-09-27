@@ -1389,6 +1389,57 @@ async def seedr_tasks():
             tasks.append(raw)
     return {"configured": True, "tasks": tasks}
 
+@app.post("/api/seedr/tasks/inspect-selection")
+async def seedr_inspect_selection(body: MagnetRequest):
+    """Read Seedr's documented unwanted-file bitmap without pausing or changing it.
+
+    This is intentionally a probe for free-account compatibility. It may add the
+    torrent if it is not already present, but it never pauses the task and never
+    writes an unwanted-file selection.
+    """
+    if not SEEDR_TOKEN:
+        raise HTTPException(503, "Seedr is not configured")
+
+    folder = str(body.folder_id or SEEDR_LIBRARY_FOLDER_ID).strip()
+    if not folder.isdigit():
+        raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
+
+    magnet = normalize_magnet(body.magnet)
+    h = info_hash(magnet)
+    if not h:
+        raise HTTPException(400, "A valid BTIH magnet link is required")
+
+    existing = await find_task_by_hash(h)
+    created = False
+    task = existing
+    if not task:
+        task = await add_task(magnet, int(folder))
+        created = True
+
+    task = unwrap_seedr_task(task)
+    tid = task_id(task)
+    if not tid:
+        raise HTTPException(502, "Seedr did not return a task id")
+
+    torrent_name = str(body.torrent_name or "").strip() or seedr_task_name(task) or f"Torrent {tid}"
+    task_folder_id = seedr_task_folder_id(task)
+
+    # Keep a disposable probe task on the same per-torrent 2-hour cleanup
+    # policy used by normal Seedr additions. Existing tasks are never re-timed.
+    if created:
+        schedule_seedr_cleanup(tid, torrent_name, task_folder_id)
+
+    unwanted = await seedr_request(f"/tasks/{quote(tid)}/unwanted")
+
+    return {
+        "taskId": int(tid) if tid.isdigit() else tid,
+        "created": created,
+        "torrentName": torrent_name,
+        "folderId": task_folder_id or None,
+        "unwanted": seedr_data(unwanted),
+        "writeTested": False,
+    }
+
 @app.post("/api/seedr/tasks/prepare")
 async def seedr_prepare(body: MagnetRequest):
     if not SEEDR_TOKEN:
