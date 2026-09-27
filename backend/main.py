@@ -1350,31 +1350,78 @@ async def _get_hls_source(file_id: str) -> tuple[str, set[str]]:
     return final_url, cached[2]
 
 
+async def resolve_seedr_stream_id(file_id: str, name: str = "") -> str:
+    """Resolve the playback identifier Seedr uses for /media/hls."""
+    candidate = str(file_id or "").strip()
+    if candidate:
+        try:
+            await _fetch_seedr_hls_manifest(candidate)
+            return candidate
+        except HTTPException:
+            pass
+
+    if not name:
+        raise HTTPException(404, "Seedr playback file could not be resolved")
+
+    try:
+        result = seedr_data(await seedr_request(f"/search/fs?query={quote(name)}"))
+    except HTTPException as exc:
+        raise HTTPException(exc.status_code, "Seedr file lookup failed") from exc
+
+    candidates = arr(result, ("files", "items"))
+    wanted_name = Path(name).name.lower()
+    for raw in candidates:
+        if not isinstance(raw, dict):
+            continue
+        raw_name = str(raw.get("name") or raw.get("title") or "").strip()
+        if raw_name.lower() != wanted_name:
+            continue
+
+        resolved = str(
+            raw.get("folder_file_id")
+            or raw.get("folderFileId")
+            or raw.get("file_id")
+            or raw.get("id")
+            or ""
+        ).strip()
+        if not resolved:
+            continue
+
+        try:
+            await _fetch_seedr_hls_manifest(resolved)
+            logger.info("Seedr playback id resolved by filename: %s -> %s", name, resolved)
+            return resolved
+        except HTTPException:
+            continue
+
+    raise HTTPException(404, f"No playable Seedr stream found for {name}")
+
+
 @app.get("/api/seedr/files/stream")
 async def seedr_file_stream(
-    file_id: str = Query(...),
+    file_id: str = Query(""),
     type: str = Query("video"),
     name: str = Query(""),
 ):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
 
+    resolved_id = await resolve_seedr_stream_id(file_id, name)
+
     if type == "video":
-        # Validate the upstream first so the frontend gets a clear API error
-        # instead of a generic manifestLoadError in Hls.js.
-        await _fetch_seedr_hls_manifest(file_id)
         return {
-            "url": "/api/seedr/hls/" + quote(file_id, safe=""),
-            "externalUrl": _seedr_media_url(file_id, "video"),
-            "name": name or file_id,
+            "url": "/api/seedr/hls/" + quote(resolved_id, safe=""),
+            "externalUrl": _seedr_media_url(resolved_id, "video"),
+            "name": name or resolved_id,
+            "resolvedFileId": resolved_id,
             "protocol": "hls",
         }
 
-    # Keep audio on Seedr's native MP3 media endpoint.
     return {
-        "url": "/api/seedr/media/audio/" + quote(file_id, safe=""),
-        "externalUrl": _seedr_media_url(file_id, "audio"),
-        "name": name or file_id,
+        "url": "/api/seedr/media/audio/" + quote(resolved_id, safe=""),
+        "externalUrl": _seedr_media_url(resolved_id, "audio"),
+        "name": name or resolved_id,
+        "resolvedFileId": resolved_id,
         "protocol": "mp3",
     }
 
