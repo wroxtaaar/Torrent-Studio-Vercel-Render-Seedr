@@ -382,6 +382,28 @@ export const api = {
     return data;
   },
 
+  async addSelectedSeedrFiles(
+    magnet: string,
+    files: Array<{ index: number; name: string; size: number }>,
+    selectedIndexes: number[],
+    torrentName?: string
+  ): Promise<any> {
+    const res = await apiFetch('/api/seedr/tasks/add-selected', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ magnet, files, selectedIndexes, torrentName: torrentName || undefined })
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) {
+      const error = new Error(data?.error || data?.message || body || `Seedr selected-file add failed (HTTP ${res.status})`);
+      if (res.status === 413) (error as any).code = 'SEEDR_INSUFFICIENT_SPACE';
+      throw error;
+    }
+    return data;
+  },
+
   async addMagnet(
     urls: string,
     category = 'Downloads',
