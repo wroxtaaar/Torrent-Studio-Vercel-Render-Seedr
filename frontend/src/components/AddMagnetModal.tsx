@@ -23,7 +23,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 import { api } from '../api/client.ts';
-import { formatBytes } from '../utils/formatters.ts';
+import { formatBytes, formatQuotaBytes } from '../utils/formatters.ts';
 
 interface AddMagnetModalProps {
   isOpen: boolean;
@@ -42,6 +42,11 @@ interface AddMagnetModalProps {
   ) => Promise<void>;
   defaultFolder?: string;
   initialMagnet?: string;
+  selectionReason?: {
+    remainingSpace: number;
+    torrentSize: number;
+    torrentName: string;
+  } | null;
 }
 
 interface InspectFileItem {
@@ -60,7 +65,8 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   onOpen,
   onAdd,
   defaultFolder = 'Downloads',
-  initialMagnet = ''
+  initialMagnet = '',
+  selectionReason = null
 }) => {
   const [magnetInput, setMagnetInput] = useState('');
   const [category, setCategory] = useState(defaultFolder);
@@ -255,13 +261,23 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         setInspectedTorrentName(String(data.name || '').trim());
 
         if (data.files.length === 1) {
-           await startSingleFileDownload(
-             resolvedSource,
-             data.files,
-             hash,
-             null,
-             inferTorrentName(data.files, String(data.name || '').trim())
-           );
+          if (selectionReason) {
+            setInspectionSource(
+              `This torrent has one file (${formatBytes(Number(data.files[0]?.size || 0))}). A single-file torrent cannot be reduced to fit Seedr's remaining space.`
+            );
+            setError(
+              `Seedr has ${formatBytes(selectionReason.remainingSpace)} remaining, but this torrent needs ${formatBytes(Number(data.files[0]?.size || 0))}.`
+            );
+            return;
+          }
+
+          await startSingleFileDownload(
+            resolvedSource,
+            data.files,
+            hash,
+            null,
+            inferTorrentName(data.files, String(data.name || '').trim())
+          );
           return;
         }
 
@@ -299,6 +315,16 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             applyFileList(normalizedFiles);
 
             if (normalizedFiles.length === 1) {
+              if (selectionReason) {
+                setInspectionSource(
+                  `This torrent has one file (${formatBytes(Number(normalizedFiles[0]?.size || 0))}). A single-file torrent cannot be reduced to fit Seedr's remaining space.`
+                );
+                setError(
+                  `Seedr has ${formatBytes(selectionReason.remainingSpace)} remaining, but this torrent needs ${formatBytes(Number(normalizedFiles[0]?.size || 0))}.`
+                );
+                return;
+              }
+
               await startSingleFileDownload(
                 source,
                 normalizedFiles,
@@ -500,6 +526,13 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       size: f.size,
       priority: f.selected ? 1 : 0
     }));
+
+    if (selectionReason) {
+      setError(
+        'Seedr cannot transfer only selected files from a torrent. Free enough Seedr space for the full torrent, then add it again.'
+      );
+      return;
+    }
 
     try {
       setIsLoading(true);
@@ -715,6 +748,17 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             </div>
           )}
 
+          {selectionReason && (
+            <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-3.5 text-xs text-amber-200">
+              <div className="font-bold text-amber-300">File selection required</div>
+              <p className="mt-1 leading-relaxed">
+                This torrent is <strong>{formatBytes(selectionReason.torrentSize)}</strong>, while Seedr has only <strong>{formatQuotaBytes(selectionReason.remainingSpace)}</strong> free.
+                You can review/select files below, but Seedr does not support transferring only part of a torrent into cloud storage.
+                The selection will not make the Seedr transfer smaller. To add this torrent to Seedr, the full torrent must fit in the remaining space.
+              </p>
+            </div>
+          )}
+
           {/* File details / selective file selection */}
           {inspectedFiles.length > 0 && (
             isSingleFile ? (
@@ -865,7 +909,11 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         {/* Modal Footer */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-3 sm:px-5 py-3 border-t border-slate-800 bg-slate-900/95">
           <div className="text-[11px] sm:text-xs text-slate-400 w-full sm:w-auto">
-            {isSingleFile && inspectedFiles.length > 0 ? (
+            {selectionReason ? (
+              <span className="text-amber-300">
+                Partial transfer to Seedr is not supported
+              </span>
+            ) : isSingleFile && inspectedFiles.length > 0 ? (
               <span>Ready to download</span>
             ) : selectedCount > 0 ? (
               <span>Downloading <strong className="text-cyan-400">{selectedCount}</strong> file(s) ({formatBytes(totalSelectedSize)}) • {inspectedFiles.length - selectedCount} skipped</span>
@@ -900,6 +948,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
               disabled={
                 isLoading ||
                 isInspecting ||
+                Boolean(selectionReason) ||
                 (inspectedFiles.length > 0 && selectedCount === 0)
               }
               className="flex-1 sm:flex-none px-4 sm:px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-cyan-500/20"
@@ -912,6 +961,8 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
               <span>
                 {isLoading
                   ? 'Adding Task...'
+                  : selectionReason
+                  ? 'Free Seedr Space to Continue'
                   : isSingleFile && selectedCount > 0
                   ? 'Download File'
                   : selectedCount > 0
