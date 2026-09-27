@@ -349,7 +349,7 @@ export const api = {
 
   openSeedrFileDownload(fileId: string): void {
     const url = '/api/seedr/files/' + encodeURIComponent(fileId) + '/download/direct';
-    window.open(url, '_blank', 'noopener,noreferrer');
+    window.open(API_BASE + url, '_blank', 'noopener,noreferrer');
   },
 
   async getSeedrFileDownload(fileId: string): Promise<{ url: string; name: string }> {
