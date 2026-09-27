@@ -653,10 +653,12 @@ export default function App() {
       setSeedrLibraryFolders(result.folders);
       setSeedrLoading(false);
 
-      // Stage 2 — start all internal/detail requests automatically, in the
-      // background, immediately after stage 1 completes.
-      setSeedrPrefetchLoading(result.folders.length > 0);
-
+      // Stage 2 — immediately load the file rows for every library folder.
+      // The old implementation only set seedrPrefetchLoading=true here and
+      // waited for a folder click to call getSeedrFolderContents(). That left
+      // the root Files view showing a permanent spinner until the user opened
+      // a folder and came back. Populate the same cache used by the folder
+      // view so the root page is complete on first load.
       const validFolderKeys = new Set(
         result.folders.map(folder => String(folder.folderId || folder.id))
       );
@@ -666,9 +668,70 @@ export default function App() {
         )
       );
 
+      if (result.folders.length === 0) {
+        setSeedrPrefetchLoading(false);
+      } else {
+        setSeedrPrefetchLoading(true);
+
+        void (async () => {
+          const foldersToLoad = result.folders.filter(folder =>
+            String(folder.folderId || folder.id).trim()
+          );
+
+          const loadedEntries: Record<string, Array<{
+            id: string;
+            streamId?: string;
+            name: string;
+            size: number;
+            folderId: string;
+            folderPath: string;
+          }>> = {};
+
+          // Keep the initial page responsive when a Seedr account contains
+          // many folders, while still loading all folder contents without
+          // requiring user navigation.
+          const concurrency = 4;
+          for (let start = 0; start < foldersToLoad.length; start += concurrency) {
+            const batch = foldersToLoad.slice(start, start + concurrency);
+
+            await Promise.all(batch.map(async folder => {
+              const folderId = String(folder.folderId || folder.id).trim();
+              if (!folderId) return;
+
+              try {
+                const contents = await api.getSeedrFolderContents(folderId);
+                const folderPath = folder.path || '/Torrent Studio';
+                loadedEntries[folderId] = contents.files.map(file => ({
+                  id: file.id,
+                  streamId: file.streamId,
+                  name: file.name,
+                  size: Number(file.size) || 0,
+                  folderId: file.folderId || folderId,
+                  folderPath,
+                }));
+              } catch (error) {
+                // A single inaccessible/still-indexing folder must not leave
+                // the whole Files page in a permanent loading state. The
+                // folder can still be retried by clicking it.
+                console.warn('Failed to prefetch Seedr folder contents:', folderId, error);
+              }
+
+              if (activeTab === 'files') {
+                setSeedrFolderContentsCache(prev => ({
+                  ...prev,
+                  ...(loadedEntries[folderId] ? { [folderId]: loadedEntries[folderId] } : {}),
+                }));
+              }
+            }));
+          }
+
+          setSeedrPrefetchLoading(false);
+        })();
+      }
+
       // Do not clear the existing file rows during refresh. React keeps the
       // current visible component intact while fresh internal details arrive.
-      // The cache effect below swaps them in as soon as they are available.
+      // The cache effect above swaps them in as soon as they are available.
     } catch (error: any) {
       setSeedrError(error?.message || 'Failed to refresh Seedr metadata');
       setSeedrLoading(false);
