@@ -1516,30 +1516,6 @@ export default function App() {
   };
 
   // Download batch zip
-  const handleDownloadBatchZip = async () => {
-    try {
-      const res = await fetch('/api/files/zip', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileIds: selectedFileIds.length > 0 ? selectedFileIds : undefined,
-          folderPath: selectedFileIds.length === 0 ? currentFolder : undefined
-        })
-      });
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `SeedFlow_${currentFolder.replace(/[/\\?%*:|"<>]/g, '_')}_Archive.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (e) {
-      console.error('Batch zip download failed:', e);
-    }
-  };
-
   // Global telemetry speeds
   const totalDlSpeed = torrents
     .filter(t => t.state === 'downloading')
