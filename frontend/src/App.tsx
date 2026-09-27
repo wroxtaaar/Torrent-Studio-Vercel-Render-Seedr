@@ -91,6 +91,7 @@ export default function App() {
     error?: string;
   } | null>(null);
   const [initialSourceUrl, setInitialSourceUrl] = useState('');
+  const [initialDescriptorUrl, setInitialDescriptorUrl] = useState('');
 
   const [theme, setTheme] = useState<'dark' | 'dim' | 'light'>(() => {
     try {
@@ -468,7 +469,7 @@ export default function App() {
     seedrNotice?.taskId != null && seedrNotice.status !== 'completed'
   );
 
-  const openAddMagnet = useCallback((source = '', sourceUrl = '') => {
+  const openAddMagnet = useCallback((source = '', sourceUrl = '', descriptorUrl = '') => {
     if (seedrDownloadActive) {
       setSeedrAddBlockedNotice(
         'A Seedr download is already in progress. Free Seedr accounts allow one parallel download. Wait for it to finish before adding another magnet link.'
@@ -480,6 +481,7 @@ export default function App() {
 
     setInitialMagnet(source);
     setInitialSourceUrl(sourceUrl);
+    setInitialDescriptorUrl(descriptorUrl);
     setIsAddMagnetOpen(true);
   }, [seedrDownloadActive]);
 
@@ -757,7 +759,7 @@ export default function App() {
     });
   }, []);
 
-  const handleSearchAdd = async (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string) => {
+  const handleSearchAdd = async (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string, descriptorUrl?: string) => {
     const trimmedSource = source.trim();
     const seedrSource =
       trimmedSource.toLowerCase().startsWith('magnet:?')
@@ -767,13 +769,13 @@ export default function App() {
           : trimmedSource;
 
     if (!seedrSource) {
-      openAddMagnet(source, sourceUrl);
+      openAddMagnet(source, sourceUrl, descriptorUrl);
       return;
     }
 
     // Search results now use the same safe metadata-first flow as pasted
     // magnets. Nothing is sent to Seedr until the user sees the file list.
-    openAddMagnet(seedrSource, sourceUrl);
+    openAddMagnet(seedrSource, sourceUrl, descriptorUrl);
   };
 
   const handleAddMagnet = async (
@@ -2527,6 +2529,7 @@ export default function App() {
           setIsAddMagnetOpen(false);
           setInitialMagnet('');
           setInitialSourceUrl('');
+          setInitialDescriptorUrl('');
           setSeedrSelectionContext(null);
         }}
         onOpen={() => {
@@ -2543,6 +2546,7 @@ export default function App() {
         defaultFolder={currentFolder === '/' ? 'Downloads' : currentFolder.replace('/', '')}
         initialMagnet={initialMagnet}
         initialSourceUrl={initialSourceUrl}
+        initialDescriptorUrl={initialDescriptorUrl}
         selectionReason={seedrSelectionContext}
       />
 
