@@ -2353,6 +2353,89 @@ async def seedr_folder_delete(folder_id: str):
 async def empty_torrents(filter: str | None = None):
     return []
 
+@app.post("/api/v2/torrents/inspect-magnet")
+async def seedr_inspect_magnet(body: dict[str, Any]):
+    """Compatibility endpoint for the existing Add Magnet UI, backed by Seedr."""
+    if not SEEDR_TOKEN:
+        raise HTTPException(503, "Seedr is not configured")
+
+    raw_magnet = str(body.get("magnet") or body.get("source") or "").strip()
+    if not raw_magnet:
+        raise HTTPException(400, "A magnet link is required")
+
+    magnet = normalize_magnet(raw_magnet)
+    h = info_hash(magnet)
+    if not h:
+        raise HTTPException(400, "A valid BTIH magnet link is required")
+
+    folder = str(SEEDR_LIBRARY_FOLDER_ID).strip()
+    if not folder.isdigit():
+        raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
+
+    existing = await find_task_by_hash(h)
+    created = False
+    task = existing
+    if not task:
+        task = await add_task(magnet, int(folder))
+        created = True
+
+    task = unwrap_seedr_task(task)
+    tid = task_id(task)
+    if not tid:
+        raise HTTPException(502, "Seedr did not return a task id")
+
+    files: list[dict[str, Any]] = []
+    for _ in range(15):
+        try:
+            files = await task_contents(tid)
+        except HTTPException:
+            files = []
+        if files:
+            break
+        await asyncio.sleep(0.5)
+
+    normalized_files = []
+    for index, item in enumerate(files):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("path") or "").strip()
+        size = int(float(item.get("size") or 0))
+        if not name:
+            continue
+        normalized_files.append({
+            "index": int(item.get("index") or index),
+            "name": name,
+            "size": size,
+            "path": str(item.get("path") or name),
+            "type": str(item.get("type") or "file"),
+            "priority": int(item.get("priority") or 0),
+        })
+
+    total_size = sum(int(item.get("size") or 0) for item in normalized_files)
+    torrent_name = (
+        str(body.get("torrent_name") or "").strip()
+        or seedr_task_name(task)
+        or f"Torrent {tid}"
+    )
+
+    if created:
+        schedule_seedr_cleanup(tid, torrent_name, seedr_task_folder_id(task))
+
+    return {
+        "name": torrent_name,
+        "hash": h,
+        "files": normalized_files,
+        "totalSize": total_size,
+        "source": "seedr_metadata",
+        "taskId": int(tid) if str(tid).isdigit() else tid,
+        "pending": not bool(normalized_files),
+        "createdPreview": created,
+        "message": "Seedr metadata loaded. The task is not paused; file-selection write support is still being tested."
+        if normalized_files else
+        "Seedr task was created, but its file list is not available yet.",
+    }
+
+
 @app.get("/api/v2/torrents/files")
 async def empty_torrent_files(hash: str):
     return []
