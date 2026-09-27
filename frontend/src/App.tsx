@@ -150,7 +150,7 @@ export default function App() {
       return null;
     }
   });
-  const [seedrFiles, setSeedrFiles] = useState<Array<{ id: string; name: string; size: number; folderId: string; folderPath: string }>>([]);
+  const [seedrFiles, setSeedrFiles] = useState<Array<{ id: string; streamId?: string; name: string; size: number; folderId: string; folderPath: string }>>([]);
   const [seedrLibraryRoot, setSeedrLibraryRoot] = useState<{
     id: string;
     folderId: string;
@@ -175,6 +175,7 @@ export default function App() {
   const [seedrPrefetchLoading, setSeedrPrefetchLoading] = useState(false);
   const [seedrFolderContentsCache, setSeedrFolderContentsCache] = useState<Record<string, Array<{
     id: string;
+    streamId?: string;
     name: string;
     size: number;
     folderId: string;
@@ -199,6 +200,7 @@ export default function App() {
 
   const toSeedrStorageFile = useCallback((file: {
     id: string;
+    streamId?: string;
     name: string;
     size: number;
     folderId: string;
@@ -226,7 +228,7 @@ export default function App() {
       isStreamable: type === 'video' || type === 'audio',
       downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
       streamUrl: type === 'video' || type === 'audio'
-        ? '/api/seedr/files/stream?name=' + encodeURIComponent(file.name) + '&type=' + encodeURIComponent(type)
+        ? '/api/seedr/files/stream?file_id=' + encodeURIComponent(file.streamId || file.id) + '&name=' + encodeURIComponent(file.name) + '&type=' + encodeURIComponent(type)
         : '',
     };
   }, []);
@@ -517,6 +519,7 @@ export default function App() {
               const contents = await api.getSeedrFolderContents(folder.folderId || folder.id);
               const mapped = contents.files.map(file => ({
                 id: file.id,
+                streamId: file.streamId,
                 name: file.name,
                 size: Number(file.size) || 0,
                 folderId: file.folderId || folder.folderId || folder.id,
@@ -588,6 +591,7 @@ export default function App() {
       const folderPath = folder?.path || '/Torrent Studio';
       const mapped = result.files.map(file => ({
         id: file.id,
+        streamId: file.streamId,
         name: file.name,
         size: Number(file.size) || 0,
         folderId: file.folderId || folderId,
@@ -1165,7 +1169,7 @@ export default function App() {
     }
   };
 
-  const handleStreamSeedrFile = async (file: { id: string; name: string; size: number; folderId: string; folderPath: string }) => {
+  const handleStreamSeedrFile = async (file: { id: string; streamId?: string; name: string; size: number; folderId: string; folderPath: string }) => {
     try {
       const type: StorageFile['type'] =
         /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts)$/i.test(file.name) ? 'video' :
@@ -1178,7 +1182,7 @@ export default function App() {
       }
 
       setSeedrError(null);
-      const result = await api.getSeedrFileStream(file.id, file.name, type);
+      const result = await api.getSeedrFileStream(file.streamId || file.id, file.name, type);
       const syntheticFile: StorageFile = {
         id: `seedr-${file.id}`,
         name: result.name || file.name,
@@ -1192,6 +1196,7 @@ export default function App() {
         ownerName: activeUser?.name || 'Admin',
         isStreamable: true,
         streamUrl: result.url,
+        externalStreamUrl: result.externalUrl,
         downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
       };
 
