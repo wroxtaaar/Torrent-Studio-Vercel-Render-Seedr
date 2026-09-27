@@ -163,10 +163,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         hls.loadSource(sourceUrl);
         hls.attachMedia(media as HTMLMediaElement);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          // Successful manifest parsing means the browser player can proceed.
-          // Do not leave a transient native media error visible.
+          // Manifest parsing is only stage 2 progress. Keep the loader visible
+          // until the browser emits "playing".
           setMediaError('');
-          setTrackNotice('');
         });
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data?.fatal) return;
