@@ -1776,13 +1776,21 @@ async def build_seedr_metadata_tree(
     return summary, children
 
 
-async def get_seedr_metadata_tree() -> dict[str, Any]:
+async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]:
     global _seedr_metadata_cache, _seedr_metadata_task
 
     if not SEEDR_TOKEN:
         return {"configured": False, "root": None, "folders": []}
 
     now = asyncio.get_running_loop().time()
+
+    if force_refresh:
+        # A completed Seedr task can become visible in the filesystem a few
+        # seconds after the metadata cache was populated. Clear both caches so
+        # the completion flow can see the new folder immediately.
+        _seedr_metadata_cache = None
+        _seedr_folder_cache.clear()
+
     if _seedr_metadata_cache and now - _seedr_metadata_cache[0] < SEEDR_METADATA_CACHE_SECONDS:
         return _seedr_metadata_cache[1]
 
@@ -1843,8 +1851,8 @@ async def get_seedr_metadata_tree() -> dict[str, Any]:
 
 
 @app.get("/api/seedr/library")
-async def seedr_library_metadata():
-    return await get_seedr_metadata_tree()
+async def seedr_library_metadata(fresh: bool = Query(False)):
+    return await get_seedr_metadata_tree(force_refresh=fresh)
 
 
 @app.get("/api/seedr/folders/{folder_id}/contents")
