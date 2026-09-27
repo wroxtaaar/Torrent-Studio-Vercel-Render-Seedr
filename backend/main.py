@@ -1269,50 +1269,6 @@ def info_hash(magnet: str) -> str:
 def task_id(task: dict[str, Any]) -> str:
     return str(task.get("user_torrent_id") or task.get("id") or task.get("task_id") or "").strip()
 
-def task_hash(task: dict[str, Any]) -> str:
-    for key in ("hash", "torrent_hash", "info_hash"):
-        value = str(task.get(key) or "").strip()
-        h = info_hash(value) if value else ""
-        if h:
-            return h
-        if re.fullmatch(r"[0-9a-fA-F]{40}", value):
-            return value.lower()
-    payload = task.get("torrent_payload")
-    if isinstance(payload, dict):
-        value = str(payload.get("hash") or "").strip()
-        if re.fullmatch(r"[0-9a-fA-F]{40}", value):
-            return value.lower()
-    return ""
-
-def task_complete(task: dict[str, Any]) -> bool:
-    state = str(task.get("state") or task.get("status") or "").lower()
-    try:
-        progress = float(task.get("progress") or 0)
-    except Exception:
-        progress = 0
-    return state in {"finished", "completed", "complete", "seeding", "stopped", "idle"} or progress >= 100
-
-async def find_task_by_hash(h: str) -> dict[str, Any] | None:
-    payload = seedr_data(await seedr_request("/tasks"))
-    for raw in arr(payload, ("tasks", "torrents", "items")):
-        task = unwrap_seedr_task(seedr_data(raw))
-        if not task or task_hash(task) != h:
-            continue
-        if task_complete(task):
-            folder = seedr_task_folder_id(task)
-            if not folder:
-                continue
-            try:
-                contents = seedr_data(await seedr_request(f"/fs/folder/{quote(folder)}/contents"))
-                if not arr(contents, ("files", "items")) and not arr(contents, ("folders", "directories")):
-                    continue
-            except HTTPException as exc:
-                if exc.status_code == 404:
-                    continue
-                raise
-        return task
-    return None
-
 async def rename_seedr_folder(folder_id: str, name: str) -> bool:
     """Best-effort rename of a Seedr folder to the canonical torrent name."""
     folder_id = str(folder_id or "").strip()
