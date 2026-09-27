@@ -741,6 +741,20 @@ def seedr_data(value: Any) -> Any:
         return value["data"]
     return value
 
+def seedr_access_token() -> str:
+    """Extract the legacy Seedr access token from a raw or wrapped token."""
+    raw = str(SEEDR_TOKEN or "").strip()
+    if not raw:
+        return ""
+    try:
+        decoded = base64.b64decode(raw, validate=True).decode("utf-8")
+        payload = json.loads(decoded)
+        if isinstance(payload, dict) and payload.get("access_token"):
+            return str(payload["access_token"]).strip()
+    except Exception:
+        pass
+    return raw
+
 async def seedr_root_request() -> Any:
     """Fetch the Seedr account root using Seedr's dedicated root endpoint."""
     if not SEEDR_TOKEN:
@@ -748,7 +762,7 @@ async def seedr_root_request() -> Any:
 
     url = "https://www.seedr.cc/api/folder"
     headers = {"Accept": "application/json"}
-    params = {"access_token": SEEDR_TOKEN}
+    params = {"access_token": seedr_access_token()}
 
     async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
         response = await client.get(url, headers=headers, params=params)
@@ -2585,7 +2599,6 @@ async def seedr_add_selected(body: dict[str, Any]):
                 f"/tasks/{quote(tid)}/unwanted",
                 "POST",
                 {"unwanted": unwanted_b64},
-                form=True,
             )
             verify_payload = await seedr_request(f"/tasks/{quote(tid)}/unwanted")
             actual = decode_seedr_unwanted(verify_payload, len(ordered_indexes), msb_first)
@@ -2621,6 +2634,16 @@ async def seedr_add_selected(body: dict[str, Any]):
     task_folder_id = seedr_task_folder_id(task)
     if created:
         schedule_seedr_cleanup(tid, torrent_name, task_folder_id)
+
+    logger.info(
+        "Seedr selected-file result: task=%s created=%s selected=%s/%s accepted=%s bit_order=%s",
+        tid,
+        created,
+        selected_size,
+        total_size,
+        accepted_bitmap is not None,
+        accepted_bit_order or "none",
+    )
 
     return {
         "backend": "seedr",
