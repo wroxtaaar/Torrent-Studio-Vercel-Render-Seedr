@@ -307,6 +307,7 @@ export default function App() {
   }>>>>({});
   const [seedrConfigured, setSeedrConfigured] = useState(false);
   const [seedrQuota, setSeedrQuota] = useState<{ maxSpace: number; usedSpace: number; remainingSpace: number } | null>(null);
+  const [seedrQuotaError, setSeedrQuotaError] = useState<string | null>(null);
   const [seedrLoading, setSeedrLoading] = useState(false);
   const [seedrError, setSeedrError] = useState<string | null>(null);
   const [seedrDeleteNotice, setSeedrDeleteNotice] = useState<string | null>(null);
@@ -687,15 +688,25 @@ export default function App() {
       // library metadata request. Quota is small and should never delay the
       // library UI or the download progress bar.
       void api.getSeedrQuota().then(quota => {
-        if (!quota.configured) return;
+        if (!quota.configured) {
+          setSeedrQuotaError('SEEDR_TOKEN_MISSING: Seedr API token is not configured in Render.');
+          return;
+        }
+        setSeedrQuotaError(null);
         setSeedrQuota({
           maxSpace: quota.maxSpace,
           usedSpace: quota.usedSpace,
           remainingSpace: quota.remainingSpace,
         });
-      }).catch(() => {
-        // Preserve the last known quota instead of showing a misleading
-        // unavailable warning.
+      }).catch((error: any) => {
+        const code = String(error?.code || '').trim();
+        const message =
+          code === 'SEEDR_TOKEN_REJECTED'
+            ? 'SEEDR_TOKEN_REJECTED: Seedr rejected the configured API token.'
+            : code === 'SEEDR_LIBRARY_ACCESS_DENIED'
+              ? 'SEEDR_LIBRARY_ACCESS_DENIED: Seedr denied access to account storage information.'
+              : 'SEEDR_QUOTA_UNAVAILABLE: Seedr account storage information is unavailable right now.';
+        setSeedrQuotaError(message);
       });
 
       // Refresh the active transfer progress independently of library
@@ -829,7 +840,16 @@ export default function App() {
       // current visible component intact while fresh internal details arrive.
       // The cache effect above swaps them in as soon as they are available.
     } catch (error: any) {
-      setSeedrError(error?.message || 'Failed to refresh Seedr metadata');
+      const code = String(error?.code || '').trim();
+      const message =
+        code === 'SEEDR_TOKEN_REJECTED'
+          ? 'SEEDR_TOKEN_REJECTED: Seedr rejected the configured API token.'
+          : code === 'SEEDR_LIBRARY_ACCESS_DENIED'
+            ? 'SEEDR_LIBRARY_ACCESS_DENIED: Seedr denied access to the Seedr library.'
+            : code === 'SEEDR_QUOTA_UNAVAILABLE'
+              ? 'SEEDR_QUOTA_UNAVAILABLE: Seedr account storage information is unavailable right now.'
+              : error?.message || 'Failed to refresh Seedr metadata';
+      setSeedrError(message);
       setSeedrLoading(false);
       setSeedrPrefetchLoading(false);
       return null;
@@ -2216,6 +2236,12 @@ export default function App() {
               {seedrError && (
                 <div className="mt-3 rounded-xl bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-xs text-rose-300">
                   {seedrError}
+                </div>
+              )}
+
+              {seedrQuotaError && !seedrError && (
+                <div className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-200">
+                  {seedrQuotaError}
                 </div>
               )}
 
