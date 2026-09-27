@@ -59,6 +59,8 @@ export interface StorageFile {
   downloadUrl: string;
   streamUrl: string;
   externalStreamUrl?: string;
+  // Canonical Seedr file/presentation id used when resolving a browser stream.
+  streamId?: string;
   duration?: number;
 }
 
