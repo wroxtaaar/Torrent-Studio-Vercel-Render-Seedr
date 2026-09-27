@@ -1274,13 +1274,17 @@ async def seedr_task_progress(tid: str):
     ).strip()
 
     if task_folder_id and canonical_name:
+        previous_name = _seedr_torrent_names.get(task_folder_id)
         _seedr_torrent_names[task_folder_id] = canonical_name
         # Seedr can expose the folder only after the task starts. Rename at
         # that point, rather than only immediately after /tasks POST.
-        try:
-            await rename_seedr_folder(task_folder_id, canonical_name)
-        except Exception:
-            pass
+        if previous_name != canonical_name:
+            try:
+                await rename_seedr_folder(task_folder_id, canonical_name)
+            except Exception:
+                pass
+            global _seedr_metadata_cache
+            _seedr_metadata_cache = None
 
     seedr_task_display_name = canonical_name
     return {
@@ -1314,11 +1318,15 @@ async def seedr_task(tid: str):
         or ""
     ).strip()
     if folder_id and canonical_name:
+        previous_name = _seedr_torrent_names.get(folder_id)
         _seedr_torrent_names[folder_id] = canonical_name
-        try:
-            await rename_seedr_folder(folder_id, canonical_name)
-        except Exception:
-            pass
+        if previous_name != canonical_name:
+            try:
+                await rename_seedr_folder(folder_id, canonical_name)
+            except Exception:
+                pass
+            global _seedr_metadata_cache
+            _seedr_metadata_cache = None
     folderNameValue = canonical_name or (await folder_name(folder_id) if folder_id else "")
     for f in files:
         f["folderPath"] = "/Torrent Studio" + ("/" + folderNameValue if folderNameValue else "")
@@ -1511,8 +1519,15 @@ async def get_seedr_metadata_tree() -> dict[str, Any]:
                 task_name = seedr_task_name(task)
 
                 if task_folder_id and task_name:
-                    folder_name_overrides[task_folder_id] = task_name
-                    _seedr_torrent_names[task_folder_id] = task_name
+                    # The title supplied by our search/add flow is canonical.
+                    # Seedr's task title can contain provider/site prefixes
+                    # (for example "www.UIndex.org - ..."), so never let task
+                    # metadata overwrite an existing canonical title.
+                    if task_folder_id not in _seedr_torrent_names:
+                        _seedr_torrent_names[task_folder_id] = task_name
+                    folder_name_overrides[task_folder_id] = (
+                        _seedr_torrent_names.get(task_folder_id) or task_name
+                    )
         except HTTPException:
             # Folder metadata remains usable even when task-name lookup fails.
             pass
