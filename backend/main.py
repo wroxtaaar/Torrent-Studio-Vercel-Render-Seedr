@@ -2544,7 +2544,11 @@ async def seedr_add_selected(body: dict[str, Any]):
         int(item.get("size") or 0)
         for item in raw_files
     )
-    unwanted_indexes = [index for index in ordered_indexes if index not in selected_set]
+    unwanted_positions = [
+        position
+        for position, metadata_index in enumerate(ordered_indexes)
+        if metadata_index not in selected_set
+    ]
 
     existing = await find_task_by_hash(h)
     created = False
@@ -2574,9 +2578,8 @@ async def seedr_add_selected(body: dict[str, Any]):
     accepted_bitmap: str | None = None
     accepted_bit_order: str | None = None
 
-    unwanted_set = set(unwanted_indexes)
     for msb_first in (False, True):
-        unwanted_b64 = build_seedr_unwanted(len(ordered_indexes), unwanted_indexes, msb_first)
+        unwanted_b64 = build_seedr_unwanted(len(ordered_indexes), unwanted_positions, msb_first)
         try:
             await seedr_request(
                 f"/tasks/{quote(tid)}/unwanted",
@@ -2590,7 +2593,7 @@ async def seedr_add_selected(body: dict[str, Any]):
             expected_positions = [
                 position
                 for position, metadata_index in enumerate(ordered_indexes)
-                if metadata_index in unwanted_set
+                if position in unwanted_positions
             ]
             if actual == expected_positions:
                 accepted_bitmap = unwanted_b64
