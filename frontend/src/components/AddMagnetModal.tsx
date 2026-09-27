@@ -423,13 +423,24 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   useEffect(() => {
     if (!isOpen || !initialMagnet.trim()) return;
 
+    // If the background resolver already produced a file list, reopening the
+    // selector must use that cached list instead of starting the background
+    // inspection again. Otherwise the "Open File Selection" action immediately
+    // closes/reopens the modal and puts it back into background mode.
+    if (inspectedFiles.length > 0 && inspectedHash) {
+      setMagnetInput(initialMagnet.trim());
+      setBackgroundMode(false);
+      setError('');
+      return;
+    }
+
     const source = initialMagnet.trim();
     setMagnetInput(source);
     setInspectedFiles([]);
     setInspectionSource('');
     setError('');
     void triggerInspect(source, true);
-  }, [isOpen, initialMagnet]);
+  }, [isOpen, initialMagnet, inspectedFiles.length, inspectedHash]);
 
   const handleInputChange = (val: string) => {
     setBackgroundMode(false);
