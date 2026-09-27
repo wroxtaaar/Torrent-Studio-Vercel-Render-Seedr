@@ -151,6 +151,27 @@ export default function App() {
     }
   });
   const [seedrFiles, setSeedrFiles] = useState<Array<{ id: string; name: string; size: number; folderId: string; folderPath: string }>>([]);
+  const [seedrLibraryRoot, setSeedrLibraryRoot] = useState<{
+    id: string;
+    folderId: string;
+    name: string;
+    path: string;
+    filesCount: number;
+    totalSize: number;
+    folderCount: number;
+  } | null>(null);
+  const [seedrLibraryFolders, setSeedrLibraryFolders] = useState<Array<{
+    id: string;
+    folderId: string;
+    name: string;
+    path: string;
+    filesCount: number;
+    totalSize: number;
+    folderCount: number;
+    active?: boolean;
+    progress?: number;
+  }>>([]);
+  const [seedrFolderContentsLoading, setSeedrFolderContentsLoading] = useState(false);
   const [seedrConfigured, setSeedrConfigured] = useState(false);
   const [seedrQuota, setSeedrQuota] = useState<{ maxSpace: number; usedSpace: number; remainingSpace: number } | null>(null);
   const [seedrLoading, setSeedrLoading] = useState(false);
@@ -169,55 +190,31 @@ export default function App() {
   });
 
   // Active Seedr transfers are shown only in the transfer card above.
-  // Keep the persistent library limited to files that Seedr has actually
-  // completed, so the same download is not rendered in two places.
-  const seedrDisplayFiles = seedrFiles.map(file => ({
-    ...file,
-    downloadProgress: undefined as number | undefined,
-    downloading: false,
-  }));
-
+  // The initial response contains folder metadata only; file rows are loaded
+  // lazily after a folder is opened.
   const seedrFolderGroups = useMemo(() => {
-    type SeedrDisplayFile = typeof seedrDisplayFiles[number];
     type SeedrFolderGroup = {
       folderId: string;
       name: string;
       path: string;
-      files: SeedrDisplayFile[];
+      files: Array<{ id: string; name: string; size: number; folderId: string; folderPath: string }>;
       totalSize: number;
+      filesCount: number;
       active?: boolean;
       progress?: number;
     };
 
-    const groups = new Map<string, SeedrFolderGroup>();
+    const groups: SeedrFolderGroup[] = seedrLibraryFolders.map(folder => ({
+      folderId: folder.folderId || folder.id,
+      name: folder.name,
+      path: folder.path,
+      files: [],
+      totalSize: Number(folder.totalSize) || 0,
+      filesCount: Number(folder.filesCount) || 0,
+      active: false,
+      progress: undefined,
+    }));
 
-    for (const file of seedrDisplayFiles) {
-      const folderId = file.folderId || '__root__';
-      const path = file.folderPath || '/';
-      const parts = path.split('/').filter(Boolean);
-      const name = parts[parts.length - 1] || 'Root Files';
-      const existing = groups.get(folderId);
-
-      if (existing) {
-        existing.files.push(file);
-        existing.totalSize += file.size;
-      } else {
-        groups.set(folderId, {
-          folderId,
-          name,
-          path,
-          files: [file],
-          totalSize: file.size
-        });
-      }
-    }
-
-    // Represent an active Seedr task as the same logical folder that will
-    // contain its completed files. Seedr may expose the folder ID late, or
-    // may use slightly different metadata between the task and filesystem
-    // endpoints, so match by ID first and then by normalized folder name,
-    // path suffix, or file-name overlap. This prevents one download from
-    // appearing as both an active card and a completed-library card.
     if (seedrNotice?.taskId != null && seedrNotice.status !== 'completed') {
       const normalizeSeedrText = (value: string) =>
         value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -234,81 +231,47 @@ export default function App() {
         'Seedr download';
 
       const activeNameKey = normalizeSeedrText(activeName);
-      const activeFileKeys = new Set(
-        (seedrNotice.files || []).map(file =>
-          normalizeSeedrText((file.folderPath || '') + '/' + file.name)
-        )
-      );
-
-      const activeFiles: SeedrDisplayFile[] = (seedrNotice.files || []).map(file => ({
-        id: file.id,
-        name: file.name,
-        size: file.size,
-        folderId: actualFolderId || file.folderId || '__active_seedr__',
-        folderPath: file.folderPath || '/Torrent Studio/' + activeName,
-        downloadProgress: Number(seedrNotice.progress) || 0,
-        downloading: true,
-      }));
-
-      let matchingEntry = actualFolderId ? groups.get(actualFolderId) : undefined;
+      let matchingEntry = actualFolderId
+        ? groups.find(group => group.folderId === actualFolderId)
+        : undefined;
 
       if (!matchingEntry) {
-        matchingEntry = Array.from(groups.values()).find(group =>
+        matchingEntry = groups.find(group =>
           normalizeSeedrText(group.name) === activeNameKey ||
           normalizeSeedrText(group.path.split('/').filter(Boolean).pop() || '') === activeNameKey
         );
       }
 
-      if (!matchingEntry && activeFileKeys.size > 0) {
-        matchingEntry = Array.from(groups.values()).find(group =>
-          group.files.some(file =>
-            activeFileKeys.has(
-              normalizeSeedrText((file.folderPath || '') + '/' + file.name)
-            )
-          )
-        );
-      }
+      const activeFileSize = (seedrNotice.files || []).reduce((sum, file) => sum + Number(file.size || 0), 0);
+      const activeFileCount = seedrNotice.files?.length || 0;
 
       if (matchingEntry) {
-        const activeKeys = new Set(
-          activeFiles.map(file =>
-            normalizeSeedrText((file.folderPath || matchingEntry!.path) + '/' + file.name)
-          )
-        );
-
-        matchingEntry.files = [
-          ...matchingEntry.files.filter(file =>
-            !activeKeys.has(
-              normalizeSeedrText((file.folderPath || matchingEntry!.path) + '/' + file.name)
-            )
-          ),
-          ...activeFiles
-        ];
-        matchingEntry.totalSize = matchingEntry.files.reduce((sum, file) => sum + file.size, 0);
         matchingEntry.active = true;
         matchingEntry.progress = Math.max(0, Math.min(100, Number(seedrNotice.progress) || 0));
-        matchingEntry.folderId = actualFolderId || matchingEntry.folderId;
         matchingEntry.name = activeName || matchingEntry.name;
+        if (actualFolderId) matchingEntry.folderId = actualFolderId;
+        if (activeFileCount > 0 && matchingEntry.filesCount === 0) matchingEntry.filesCount = activeFileCount;
+        if (activeFileSize > 0 && matchingEntry.totalSize === 0) matchingEntry.totalSize = activeFileSize;
       } else {
-        const syntheticFolderId = actualFolderId || '__active_seedr__';
-        groups.set(syntheticFolderId, {
-          folderId: syntheticFolderId,
+        groups.unshift({
+          folderId: actualFolderId || '__active_seedr__',
           name: activeName,
           path: '/Torrent Studio/' + activeName,
-          files: activeFiles,
-          totalSize: activeFiles.reduce((sum, file) => sum + file.size, 0),
+          files: [],
+          totalSize: activeFileSize,
+          filesCount: activeFileCount,
           active: true,
           progress: Math.max(0, Math.min(100, Number(seedrNotice.progress) || 0)),
         });
       }
     }
 
-    return Array.from(groups.values()).sort((a, b) => {
+    return groups.sort((a, b) => {
       if (a.active && !b.active) return -1;
       if (!a.active && b.active) return 1;
       return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
     });
-  }, [seedrDisplayFiles, seedrNotice]);
+  }, [seedrLibraryFolders, seedrNotice]);
 
   useEffect(() => {
     if (selectedSeedrFolderId !== null && !seedrFolderGroups.some(folder => folder.folderId === selectedSeedrFolderId)) {
@@ -418,13 +381,13 @@ export default function App() {
     setIsAddMagnetOpen(true);
   }, [seedrDownloadActive]);
 
-  // Load all initial system data
+  // Load lightweight application metadata first. The actual files for the
+  // currently open folder are fetched separately, after folder metadata exists.
   const loadInitialData = useCallback(async () => {
     try {
-      const [uData, sStats, fData, foldData, logs, notifs, qbt, cleanup] = await Promise.all([
+      const [uData, sStats, foldData, logs, notifs, qbt, cleanup] = await Promise.all([
         api.getUsers(),
         api.getStorageStats(),
-        api.getFiles(currentFolder, fileSearch, fileTypeFilter),
         api.getFolders(),
         api.getLogs(),
         api.getNotifications(),
@@ -435,43 +398,112 @@ export default function App() {
       setUsers(uData.users);
       setActiveUser(uData.activeUser);
       setStorageStats(sStats);
-      setFiles(fData);
       setFolders(foldData);
       setActivityLogs(logs);
       setNotifications(notifs);
       setQbtSettings(qbt);
       setCleanupSettings(cleanup);
     } catch (e) {
-      console.error('Failed to load initial seedflow data:', e);
+      console.error('Failed to load initial seedflow metadata:', e);
     }
-  }, [currentFolder, fileSearch, fileTypeFilter]);
+  }, []);
 
   useEffect(() => {
     loadInitialData();
   }, [loadInitialData]);
 
+  const loadCurrentFiles = useCallback(async () => {
+    try {
+      const folderId = currentFolder === '/'
+        ? ''
+        : String(folders.find(folder => folder.path === currentFolder)?.id || '');
+      const fData = await api.getFiles(currentFolder, fileSearch, fileTypeFilter, folderId);
+      setFiles(fData);
+    } catch (e) {
+      console.error('Failed to load current folder files:', e);
+      setFiles([]);
+    }
+  }, [currentFolder, fileSearch, fileTypeFilter, folders]);
+
+  useEffect(() => {
+    if (activeTab === 'files') {
+      loadCurrentFiles();
+    }
+  }, [activeTab, loadCurrentFiles]);
 
   const loadSeedrLibrary = useCallback(async () => {
     setSeedrLoading(true);
     setSeedrError(null);
     try {
+      // First call: folder names/counts/sizes only.
       const [result, quota] = await Promise.all([
-        api.getSeedrFiles(),
+        api.getSeedrLibrary(),
         api.getSeedrQuota().catch(() => null)
       ]);
       setSeedrConfigured(result.configured);
-      setSeedrFiles(result.files);
+      setSeedrLibraryRoot(result.root);
+      setSeedrLibraryFolders(result.folders);
       setSeedrQuota(quota && quota.configured ? {
         maxSpace: quota.maxSpace,
         usedSpace: quota.usedSpace,
         remainingSpace: quota.remainingSpace
       } : null);
+
+      // Second call: only fetch file rows for the folder currently open.
+      if (selectedSeedrFolderId) {
+        const folder = result.folders.find(item => item.folderId === selectedSeedrFolderId || item.id === selectedSeedrFolderId);
+        if (folder) {
+          setSeedrFolderContentsLoading(true);
+          try {
+            const contents = await api.getSeedrFolderContents(folder.folderId || folder.id);
+            setSeedrFiles(contents.files.map(file => ({
+              id: file.id,
+              name: file.name,
+              size: file.size,
+              folderId: file.folderId || folder.folderId || folder.id,
+              folderPath: folder.path,
+            })));
+          } finally {
+            setSeedrFolderContentsLoading(false);
+          }
+        } else {
+          setSeedrFiles([]);
+        }
+      } else {
+        setSeedrFiles([]);
+      }
     } catch (error: any) {
-      setSeedrError(error?.message || 'Failed to load Seedr files');
+      setSeedrError(error?.message || 'Failed to load Seedr library metadata');
+      setSeedrFolderContentsLoading(false);
     } finally {
       setSeedrLoading(false);
     }
-  }, []);
+  }, [selectedSeedrFolderId]);
+
+  const handleOpenSeedrFolder = useCallback(async (folderId: string) => {
+    if (!folderId || folderId === '__root__' || folderId === '__active_seedr__') return;
+    const folder = seedrFolderGroups.find(item => item.folderId === folderId);
+    setSelectedSeedrFolderId(folderId);
+    setSeedrFiles([]);
+    setSeedrFolderContentsLoading(true);
+    setSeedrError(null);
+
+    try {
+      const result = await api.getSeedrFolderContents(folderId);
+      const folderPath = folder?.path || '/Torrent Studio';
+      setSeedrFiles(result.files.map(file => ({
+        id: file.id,
+        name: file.name,
+        size: Number(file.size) || 0,
+        folderId: file.folderId || folderId,
+        folderPath,
+      })));
+    } catch (error: any) {
+      setSeedrError(error?.message || 'Failed to load Seedr folder contents');
+    } finally {
+      setSeedrFolderContentsLoading(false);
+    }
+  }, [seedrFolderGroups]);
 
   useEffect(() => {
     if (activeTab === 'files') loadSeedrLibrary();
@@ -1083,7 +1115,7 @@ export default function App() {
       const group = seedrFolderGroups.find(item => item.folderId === file.folderId);
       const isSingleFileFolder =
         file.folderId !== '__root__' &&
-        group?.files.length === 1;
+        group?.filesCount === 1;
 
       if (isSingleFileFolder) {
         await api.deleteSeedrFolder(file.folderId);
@@ -1091,6 +1123,15 @@ export default function App() {
       } else {
         await api.deleteSeedrFile(file.id);
         setSeedrFiles(prev => prev.filter(item => item.id !== file.id));
+        setSeedrLibraryFolders(prev => prev.map(item =>
+          (item.folderId === file.folderId || item.id === file.folderId)
+            ? {
+                ...item,
+                filesCount: Math.max(0, Number(item.filesCount || 0) - 1),
+                totalSize: Math.max(0, Number(item.totalSize || 0) - Number(file.size || 0)),
+              }
+            : item
+        ));
       }
 
       setSeedrError(null);
@@ -1116,6 +1157,7 @@ export default function App() {
     try {
       await api.deleteSeedrFolder(folderId);
       setSeedrFiles(prev => prev.filter(item => item.folderId !== folderId));
+      setSeedrLibraryFolders(prev => prev.filter(item => item.folderId !== folderId && item.id !== folderId));
       setSelectedSeedrFolderId(prev => prev === folderId ? null : prev);
       setSeedrError(null);
       setSeedrDeleteNotice('Deleted successfully');
@@ -1554,7 +1596,7 @@ export default function App() {
                     <span>Seedr Library</span>
                     {seedrConfigured && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
-                        {seedrDisplayFiles.length} files
+                        {seedrLibraryRoot?.filesCount || 0} files
                       </span>
                     )}
                   </h2>
@@ -1637,7 +1679,7 @@ export default function App() {
                             <div className="flex items-center gap-2.5">
                               <button
                                 type="button"
-                                onClick={() => folder.folderId !== '__root__' && folder.folderId !== '__active_seedr__' && setSelectedSeedrFolderId(folder.folderId)}
+                                onClick={() => void handleOpenSeedrFolder(folder.folderId)}
                                 className="min-w-0 flex-1 text-left flex items-center gap-3"
                                 disabled={folder.folderId === '__root__'}
                               >
@@ -1647,7 +1689,7 @@ export default function App() {
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate text-sm font-semibold text-slate-100">{folder.name}</div>
                                   <div className="text-[10px] text-slate-500 mt-0.5">
-                                    {folder.files.length} files • {formatBytes(folder.totalSize)}
+                                    {folder.filesCount} files • {formatBytes(folder.totalSize)}
                                     {folder.active && <span className="text-emerald-300"> • Downloading</span>}
                                   </div>
                                   {folder.active && (
@@ -1721,7 +1763,7 @@ export default function App() {
                             </button>
                             <div className="text-right min-w-0">
                               <div className="text-sm font-semibold text-slate-100 truncate">{folder.name}</div>
-                              <div className="text-[10px] text-slate-500">{folder.files.length} files • {formatBytes(folder.totalSize)}</div>
+                              <div className="text-[10px] text-slate-500">{folder.filesCount} files • {formatBytes(folder.totalSize)}</div>
                             </div>
                             <button
                               type="button"
@@ -1732,8 +1774,14 @@ export default function App() {
                             </button>
                           </div>
 
-                          <div className="grid grid-cols-1 gap-2">
-                            {folder.files.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })).map(file => (
+                          {seedrFolderContentsLoading ? (
+                            <div className="py-10 text-center text-xs text-slate-400">
+                              <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin text-emerald-400" />
+                              Loading folder contents…
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-2">
+                              {seedrFiles.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })).map(file => (
                               <div
                                 key={file.id}
                                 className="flex items-center justify-between gap-3 rounded-xl bg-slate-900/80 border border-slate-800 px-3 py-2.5"
@@ -1795,7 +1843,8 @@ export default function App() {
                                 </div>
                               </div>
                             ))}
-                          </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })()
