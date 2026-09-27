@@ -33,7 +33,9 @@ SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "epis
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
 TORRENT_METADATA_API_URL = os.getenv("TORRENT_METADATA_API_URL", "https://torrentmeta.fly.dev").rstrip("/")
-SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "8.5"))
+SEARCH_SOURCE_TIMEOUT_SECONDS = float(os.getenv("SEARCH_SOURCE_TIMEOUT_SECONDS", "2.25"))
+SEARCH_TOTAL_TIMEOUT_SECONDS = float(os.getenv("SEARCH_TOTAL_TIMEOUT_SECONDS", "2.75"))
+SEARCH_GRACE_SECONDS = float(os.getenv("SEARCH_GRACE_SECONDS", "0.2"))
 SEARCH_CACHE_SECONDS = float(os.getenv("SEARCH_CACHE_SECONDS", "60"))
 TORRENT_METADATA_CACHE_FILE = Path(os.getenv("TORRENT_METADATA_CACHE_FILE", "/app/.torrent_metadata_cache.json"))
 TORRENT_METADATA_JOB_TIMEOUT_SECONDS = float(os.getenv("TORRENT_METADATA_JOB_TIMEOUT_SECONDS", "60"))
@@ -1794,7 +1796,7 @@ async def search_knaben(query: str, limit: int = 100) -> list[dict[str, Any]]:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=8.5) as client:
+        async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS) as client:
             response = await client.post(
                 KNABEN_API_URL,
                 json=body,
@@ -1903,7 +1905,7 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
 
     async def aggregate_fallback() -> list[dict[str, Any]]:
         try:
-            async with httpx.AsyncClient(timeout=8.5, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=SEARCH_SOURCE_TIMEOUT_SECONDS, follow_redirects=True) as client:
                 response = await client.post(
                     f"{TORRENT_SEARCH_API_URL}/torrent/search",
                     params={
@@ -1993,12 +1995,22 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
     aggregate_results: list[dict[str, Any]] = []
     pending = {knaben_task, aggregate_task}
 
+    search_deadline = asyncio.get_running_loop().time() + SEARCH_TOTAL_TIMEOUT_SECONDS
     try:
         while pending:
+            remaining = search_deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                logger.info("Search deadline reached for '%s'", query)
+                break
+
             done, pending = await asyncio.wait(
                 pending,
+                timeout=remaining,
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            if not done:
+                logger.info("Search deadline reached for '%s'", query)
+                break
 
             for task in done:
                 try:
@@ -2012,29 +2024,36 @@ async def search_1337x(query: str, limit: int = 50) -> list[dict[str, Any]]:
                 else:
                     aggregate_results = result if isinstance(result, list) else []
 
-                # If a provider gave us useful results, give the other provider
-                # a very short opportunity to add/replace results, but don't
-                # make a slow provider hold the search UI open.
+                # A non-empty provider result is enough to render the search.
+                # Give the other provider only a tiny grace period.
                 if result:
                     if pending:
-                        try:
-                            grace_done, pending_after_grace = await asyncio.wait(
-                                pending,
-                                timeout=0.45,
-                            )
-                            pending = pending_after_grace
-                            for grace_task in grace_done:
-                                try:
-                                    grace_result = await grace_task
-                                except (asyncio.TimeoutError, Exception) as exc:
-                                    logger.info("Search grace provider failed for '%s': %s", query, exc)
-                                    continue
-                                if grace_task is knaben_task:
-                                    knaben_results = grace_result if isinstance(grace_result, list) else []
-                                else:
-                                    aggregate_results = grace_result if isinstance(grace_result, list) else []
-                        except Exception as exc:
-                            logger.info("Search grace period failed for '%s': %s", query, exc)
+                        remaining = max(
+                            0.0,
+                            min(
+                                SEARCH_GRACE_SECONDS,
+                                search_deadline - asyncio.get_running_loop().time(),
+                            ),
+                        )
+                        if remaining > 0:
+                            try:
+                                grace_done, pending_after_grace = await asyncio.wait(
+                                    pending,
+                                    timeout=remaining,
+                                )
+                                pending = pending_after_grace
+                                for grace_task in grace_done:
+                                    try:
+                                        grace_result = await grace_task
+                                    except (asyncio.TimeoutError, Exception) as exc:
+                                        logger.info("Search grace provider failed for '%s': %s", query, exc)
+                                        continue
+                                    if grace_task is knaben_task:
+                                        knaben_results = grace_result if isinstance(grace_result, list) else []
+                                    else:
+                                        aggregate_results = grace_result if isinstance(grace_result, list) else []
+                            except Exception as exc:
+                                logger.info("Search grace period failed for '%s': %s", query, exc)
                     break
     finally:
         for task in (knaben_task, aggregate_task):
