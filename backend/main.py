@@ -2638,9 +2638,15 @@ async def _get_hls_source(file_id: str) -> tuple[str, set[str]]:
 
 
 async def resolve_seedr_stream_id(file_id: str, name: str = "") -> str:
-    """Resolve the playback identifier Seedr uses for /media/hls."""
+    """Resolve the Seedr playback file identifier without requiring HLS."""
     candidate = str(file_id or "").strip()
     if candidate:
+        try:
+            presentation = await seedr_v2_video_url(candidate)
+            if presentation:
+                return candidate
+        except HTTPException:
+            pass
         try:
             await _fetch_seedr_hls_manifest(candidate)
             return candidate
