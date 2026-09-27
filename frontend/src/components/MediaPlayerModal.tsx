@@ -271,7 +271,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
   const openSubtitleSearch = () => {
     if (!file) return;
-    const query = file.name.replace(/\\.(mkv|mp4|m4v|webm|mov|avi|ts)$/i, '').replace(/[._-]+/g, ' ').trim();
+    const query = file.name.replace(/\.(mkv|mp4|m4v|webm|mov|avi|ts)$/i, '').replace(/[._-]+/g, ' ').trim();
     setSubtitleSearchQuery(query);
     setSubtitleSearchResults([]);
     setSubtitleSearchError('');
