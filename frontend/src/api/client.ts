@@ -305,7 +305,7 @@ export const api = {
   async getSeedrFolderContents(folderId: string): Promise<{
     configured: boolean;
     folderId: string;
-    files: Array<{ id: string; name: string; size: number; folderId: string; url?: string | null }>;
+    files: Array<{ id: string; streamId?: string; name: string; size: number; folderId: string; url?: string | null }>;
     folders: Array<{ id: string; folderId: string; name: string }>;
   }> {
     const res = await apiFetch('/api/seedr/folders/' + encodeURIComponent(folderId) + '/contents');
@@ -345,7 +345,7 @@ export const api = {
     return data;
   },
 
-  async getSeedrFileStream(fileId: string, fileName: string, type: 'video' | 'audio'): Promise<{ url: string; name: string }> {
+  async getSeedrFileStream(fileId: string, fileName: string, type: 'video' | 'audio'): Promise<{ url: string; externalUrl?: string; name: string }> {
     const params = new URLSearchParams({
       type,
       file_id: fileId,
