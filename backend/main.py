@@ -320,6 +320,138 @@ async def _fetch_source_torrent_descriptor(source_url: str, info_hash_value: str
     return None
 
 
+def _metadata_magnet_with_trackers(magnet: str) -> str:
+    """Add the known-good HTTP trackers used by the fast WebTorrent test."""
+    try:
+        parsed = urlsplit(magnet)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        rebuilt: list[tuple[str, str]] = []
+        for key in ("xt", "dn"):
+            for value in params.get(key, []):
+                if value:
+                    rebuilt.append((key, str(value)))
+        existing = {str(value).strip() for value in params.get("tr", []) if value}
+        for tracker in FAST_SEARCH_TRACKERS:
+            if tracker not in existing:
+                rebuilt.append(("tr", tracker))
+        return "magnet:?" + urlencode(rebuilt, doseq=True)
+    except Exception:
+        return magnet
+
+
+async def _fetch_fast_test_metadata(magnet: str, info_hash_value: str) -> dict[str, Any] | None:
+    """Use the proven WebTorrent resolver service as a metadata-only race participant."""
+    if not FAST_SEARCH_TEST_URL:
+        return None
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=4.0,
+            follow_redirects=True,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        ) as client:
+            response = await client.post(
+                FAST_SEARCH_TEST_URL + "/api/metadata",
+                json={"magnet": magnet},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.info("Fast WebTorrent metadata service failed for %s: %s", info_hash_value, exc)
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    if str(payload.get("status") or "").lower() == "completed" and isinstance(payload.get("files"), list):
+        metadata = payload
+    else:
+        job_id = str(payload.get("jobId") or "").strip()
+        if not job_id:
+            return None
+
+        deadline = time.monotonic() + min(
+            12.0,
+            max(0.0, TORRENT_METADATA_JOB_TIMEOUT_SECONDS),
+        )
+        metadata = None
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.75)
+            remaining = max(0.5, deadline - time.monotonic())
+            try:
+                async with httpx.AsyncClient(
+                    timeout=min(3.0, remaining),
+                    follow_redirects=True,
+                    headers={"Accept": "application/json"},
+                ) as poll_client:
+                    poll_response = await poll_client.get(
+                        FAST_SEARCH_TEST_URL + "/api/metadata-jobs/" + quote(job_id, safe=""),
+                    )
+                    if poll_response.status_code == 404:
+                        return None
+                    poll_response.raise_for_status()
+                    poll = poll_response.json()
+            except (httpx.HTTPError, ValueError, TypeError):
+                continue
+
+            job = poll.get("job") if isinstance(poll, dict) else None
+            if not isinstance(job, dict):
+                continue
+            if str(job.get("status") or "").lower() == "completed":
+                candidate = job.get("metadata")
+                if isinstance(candidate, dict) and isinstance(candidate.get("files"), list):
+                    metadata = candidate
+                    break
+            if str(job.get("status") or "").lower() == "failed":
+                return None
+
+        if metadata is None:
+            return None
+
+    returned_hash = str(metadata.get("infoHash") or metadata.get("hash") or "").strip().lower()
+    if returned_hash and returned_hash != info_hash_value.lower():
+        logger.info(
+            "Fast WebTorrent metadata hash mismatch: wanted %s, got %s",
+            info_hash_value,
+            returned_hash,
+        )
+        return None
+
+    raw_files = metadata.get("files")
+    if not isinstance(raw_files, list) or not raw_files:
+        return None
+
+    files: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_files):
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("name") or "").strip()
+        if not path:
+            continue
+        files.append({
+            "index": int(item.get("index") if item.get("index") is not None else index),
+            "name": str(item.get("name") or path),
+            "size": int(float(item.get("size") or 0)),
+            "path": path,
+            "type": "file",
+            "priority": 1,
+        })
+    if not files:
+        return None
+
+    result = {
+        "name": str(metadata.get("name") or files[0]["name"]),
+        "hash": info_hash_value.lower(),
+        "files": files,
+        "totalSize": sum(int(item["size"]) for item in files),
+        "source": "webtorrent_fast_test",
+        "pending": False,
+        "createdPreview": False,
+        "message": "Torrent metadata loaded without starting Seedr.",
+    }
+    return result
+
+
 def _metadata_from_torrent_bytes(raw: bytes, info_hash_value: str, source: str) -> dict[str, Any]:
     meta = decode_torrent_metadata(raw)
     info = meta.get(b"info")
@@ -382,7 +514,7 @@ async def _get_libtorrent_session() -> Any:
             return _libtorrent_session
         session = lt.session()
         session.apply_settings({
-            "enable_dht": True,
+            "enable_dht": False,
             "enable_lsd": False,
             "enable_upnp": False,
             "enable_natpmp": False,
@@ -391,11 +523,7 @@ async def _get_libtorrent_session() -> Any:
             "enable_incoming_tcp": True,
             "enable_incoming_utp": True,
             "listen_interfaces": "0.0.0.0:0",
-            "dht_bootstrap_nodes": (
-                "router.bittorrent.com:6881,"
-                "router.utorrent.com:6881,"
-                "dht.transmissionbt.com:6881"
-            ),
+            "dht_bootstrap_nodes": "",
             "announce_to_all_trackers": True,
             "announce_to_all_tiers": True,
             "connection_speed": 50,
@@ -414,7 +542,7 @@ def _metadata_from_libtorrent_sync(magnet: str, info_hash_value: str) -> dict[st
 
     handle = None
     try:
-        atp = lt.parse_magnet_uri(magnet)
+        atp = lt.parse_magnet_uri(_metadata_magnet_with_trackers(magnet))
         atp.save_path = tmp
         atp.flags = atp.flags | lt.torrent_flags.upload_mode
         atp.flags = atp.flags & ~lt.torrent_flags.auto_managed
@@ -521,8 +649,14 @@ async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> N
             _fetch_remote_torrent_metadata(magnet, info_hash_value)
         )
         knaben_task = asyncio.create_task(_lookup_knaben_by_hash(info_hash_value))
+        webtorrent_task = asyncio.create_task(
+            _fetch_fast_test_metadata(
+                _metadata_magnet_with_trackers(magnet),
+                info_hash_value,
+            )
+        )
         libtorrent_task = asyncio.create_task(resolve_libtorrent())
-        tasks = (remote_task, knaben_task, libtorrent_task)
+        tasks = (remote_task, knaben_task, webtorrent_task, libtorrent_task)
         errors: list[str] = []
         winner: dict[str, Any] | None = None
 
@@ -560,10 +694,15 @@ async def _run_metadata_job(job_id: str, magnet: str, info_hash_value: str) -> N
                 )
                 return
         finally:
-            for task in (remote_task, knaben_task):
+            for task in (remote_task, knaben_task, webtorrent_task):
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(remote_task, knaben_task, return_exceptions=True)
+            await asyncio.gather(
+                remote_task,
+                knaben_task,
+                webtorrent_task,
+                return_exceptions=True,
+            )
 
             # asyncio.to_thread cannot force-stop the libtorrent worker.
             # When another resolver already won, let that worker finish in the
