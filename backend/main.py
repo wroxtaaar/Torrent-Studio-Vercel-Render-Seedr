@@ -755,6 +755,58 @@ def seedr_access_token() -> str:
         pass
     return raw
 
+async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
+    """List a Seedr folder using the legacy resource endpoint.
+    
+    The free account/token used by Torrent Studio can deny the modern root
+    filesystem endpoint while still permitting list_contents through Seedr's
+    legacy resource API.
+    """
+    if not SEEDR_TOKEN:
+        raise HTTPException(503, "Seedr is not configured")
+
+    access_token = seedr_access_token()
+    if not access_token:
+        raise HTTPException(503, "Seedr access token is empty")
+
+    url = "https://www.seedr.cc/oauth_test/resource.php"
+    params = {
+        "access_token": access_token,
+        "func": "list_contents",
+    }
+    form = {
+        "content_type": "folder",
+        "content_id": str(folder_id),
+    }
+    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
+        response = await client.post(
+            url,
+            params=params,
+            data=form,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+
+    raw = response.text
+    try:
+        data = response.json() if raw else None
+    except Exception:
+        data = raw
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            response.status_code,
+            seedr_error_message(response.status_code, data, raw),
+        )
+
+    if isinstance(data, dict) and str(data.get("error") or "").strip() not in ("", "0"):
+        raise HTTPException(502, f"Seedr legacy list_contents failed: {data.get('error')}")
+
+    return data
+
+
 async def seedr_root_request() -> Any:
     """Fetch the Seedr account root using Seedr's dedicated root endpoint."""
     if not SEEDR_TOKEN:
@@ -2869,7 +2921,10 @@ async def seedr_folder_payload(folder_id: str) -> dict[str, Any]:
             # Seedr exposes the account root through /api/folder; numeric
             # folder IDs use the /fs/folder/{id}/contents endpoint.
             if folder_id == "0":
-                payload = seedr_data(await seedr_root_request())
+                # Prefer the legacy list_contents endpoint for the account root.
+                # The free-token integration supports this even when the modern
+                # root filesystem endpoint responds with access_denied.
+                payload = seedr_data(await legacy_seedr_list_contents("0"))
             else:
                 payload = seedr_data(await seedr_request(f"/fs/folder/{quote(folder_id)}/contents"))
         except HTTPException as exc:
