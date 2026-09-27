@@ -27,13 +27,11 @@ import {
   ShieldCheck,
   AlertTriangle,
   RefreshCw,
-  Cpu,
   Trash2,
   Users,
   ChevronRight,
   Sparkles,
   Layers,
-  FileArchive,
   ArrowUpDown,
   ExternalLink,
   Film,
@@ -50,7 +48,6 @@ import {
   ActivityLog,
   AppNotification,
   CleanupSettings,
-  QbtSettings,
   UserPermission
 } from './types/index.ts';
 
@@ -67,7 +64,6 @@ import { StorageCleanupModal } from './components/StorageCleanupModal.tsx';
 import { FolderShareModal } from './components/FolderShareModal.tsx';
 import { NotificationCenter } from './components/NotificationCenter.tsx';
 import { ActivityLogView } from './components/ActivityLogView.tsx';
-import { QbtSettingsModal } from './components/QbtSettingsModal.tsx';
 import { CreateFolderModal } from './components/CreateFolderModal.tsx';
 import { MoveFileModal } from './components/MoveFileModal.tsx';
 import { RenameModal } from './components/RenameModal.tsx';
@@ -115,7 +111,6 @@ export default function App() {
     }
   });
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [qbtSettings, setQbtSettings] = useState<QbtSettings | null>(null);
   const [cleanupSettings, setCleanupSettings] = useState<CleanupSettings | null>(null);
   type SeedrNotice = {
     taskId: number | string | null;
@@ -385,7 +380,6 @@ export default function App() {
   const [initialMagnet, setInitialMagnet] = useState('');
   const [prioTorrent, setPrioTorrent] = useState<TorrentItem | null>(null);
   const [isCleanupOpen, setIsCleanupOpen] = useState(false);
-  const [isQbtSettingsOpen, setIsQbtSettingsOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
   const [shareFolder, setShareFolder] = useState<StorageFolder | null>(null);
@@ -477,13 +471,12 @@ export default function App() {
   // currently open folder are fetched separately, after folder metadata exists.
   const loadInitialData = useCallback(async () => {
     try {
-      const [uData, sStats, foldData, logs, notifs, qbt, cleanup] = await Promise.all([
+      const [uData, sStats, foldData, logs, notifs, cleanup] = await Promise.all([
         api.getUsers(),
         api.getStorageStats(),
         api.getFolders(),
         api.getLogs(),
         api.getNotifications(),
-        api.getQbtSettings(),
         api.getCleanupSettings()
       ]);
 
@@ -499,7 +492,6 @@ export default function App() {
         setActivityLogs(logs);
       }
       setNotifications(notifs);
-      setQbtSettings(qbt);
       setCleanupSettings(cleanup);
     } catch (e) {
       console.error('Failed to load initial seedflow metadata:', e);
@@ -1602,22 +1594,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Storage Pill (Uncapped, No 5GB Limit) */}
-            {storageStats && (
-              <button
-                onClick={() => setIsCleanupOpen(true)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-xs transition group"
-                title="View Server Storage & Auto-Cleanup"
-              >
-                <HardDrive className={`w-3.5 h-3.5 ${storageStats.alertLevel === 'critical' ? 'text-rose-400 animate-pulse' : storageStats.alertLevel === 'warning' ? 'text-amber-400' : 'text-cyan-400'}`} />
-                <span className="text-slate-300 font-mono text-[11px]">
-                  {formatBytes(storageStats.usedBytes)} / {formatBytes(storageStats.totalBytes)} ({storageStats.usedPercentage}%)
-                </span>
-                <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyan-500/10 text-cyan-400 font-semibold group-hover:bg-cyan-500/20">
-                  Uncapped
-                </span>
-              </button>
-            )}
+
           </div>
 
           {/* Right: Quick actions & User Switcher */}
@@ -1644,15 +1621,6 @@ export default function App() {
                   {unreadNotifsCount}
                 </span>
               )}
-            </button>
-
-            {/* qBittorrent WebAPI Settings */}
-            <button
-              onClick={() => setIsQbtSettingsOpen(true)}
-              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 transition tap-target hidden sm:flex items-center justify-center border border-slate-800"
-              title="qBittorrent WebAPI Settings"
-            >
-              <Cpu className="w-4 h-4 text-cyan-400" />
             </button>
 
             {/* Theme Toggle */}
@@ -2117,25 +2085,7 @@ export default function App() {
                     ))}
                 </div>
 
-                {/* Explorer Action Buttons */}
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setIsCreateFolderOpen(true)}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition"
-                  >
-                    <FolderPlus className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>New Folder</span>
-                  </button>
 
-                  <button
-                    onClick={handleDownloadBatchZip}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition"
-                    title="Download Current Folder as Zip Archive"
-                  >
-                    <FileArchive className="w-3.5 h-3.5 text-amber-400" />
-                    <span className="hidden sm:inline">Zip Archive</span>
-                  </button>
-                </div>
               </div>
 
               {/* Search & Category Filter */}
@@ -2439,15 +2389,6 @@ export default function App() {
 
               <button
                 type="button"
-                onClick={() => { setIsQbtSettingsOpen(true); setIsMobileMoreOpen(false); }}
-                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
-              >
-                <Cpu className="w-4 h-4 text-cyan-400" />
-                qBittorrent
-              </button>
-
-              <button
-                type="button"
                 onClick={() => {
                   setTheme(theme === 'dark' ? 'dim' : theme === 'dim' ? 'light' : 'dark');
                 }}
@@ -2545,16 +2486,6 @@ export default function App() {
           dispatchBrowserNotification('SeedFlow Push Notification Test', 'Push alert successfully triggered! Everything is running smoothly.');
           const notifs = await api.getNotifications();
           setNotifications(notifs);
-        }}
-      />
-
-      <QbtSettingsModal
-        isOpen={isQbtSettingsOpen}
-        onClose={() => setIsQbtSettingsOpen(false)}
-        settings={qbtSettings}
-        onSave={async (s) => {
-          const updated = await api.updateQbtSettings(s);
-          setQbtSettings(updated);
         }}
       />
 
