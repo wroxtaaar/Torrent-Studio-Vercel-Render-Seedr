@@ -498,6 +498,8 @@ export default function App() {
       setSeedrConfigured(result.configured);
       setSeedrLibraryRoot(result.root);
       setSeedrLibraryFolders(result.folders);
+      setSeedrFolderContentsCache({});
+      setSeedrFiles([]);
       setSeedrQuota(quota && quota.configured ? {
         maxSpace: quota.maxSpace,
         usedSpace: quota.usedSpace,
@@ -520,10 +522,14 @@ export default function App() {
                 folderId: file.folderId || folder.folderId || folder.id,
                 folderPath: folder.path,
               }));
+              const folderKey = folder.folderId || folder.id;
               setSeedrFolderContentsCache(prev => ({
                 ...prev,
-                [folder.folderId || folder.id]: mapped,
+                [folderKey]: mapped,
               }));
+              setSeedrFiles(current => (
+                selectedSeedrFolderId === folderKey ? mapped : current
+              ));
             } catch (error) {
               console.warn('Failed to prefetch Seedr folder:', folder.name, error);
             }
