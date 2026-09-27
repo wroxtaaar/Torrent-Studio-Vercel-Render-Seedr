@@ -533,10 +533,9 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       return;
     }
 
-    // For a pasted magnet we must know whether it contains one file or
-    // multiple files before deciding which backend to use. Seedr can start
-    // fetching as soon as it receives a task, so multi-file magnets are
-    // inspected with qBittorrent first and remain paused until confirmed.
+    // Resolve metadata before sending anything to Seedr. This keeps the
+    // selection decision local to Torrent Studio and avoids creating a Seedr
+    // task before the user has chosen the files.
     if (isDirectSeedrSource && inspectedFiles.length === 0) {
       await triggerInspect(magnetInput.trim(), false);
       return;
