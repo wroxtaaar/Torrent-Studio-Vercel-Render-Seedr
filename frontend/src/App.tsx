@@ -76,10 +76,10 @@ import { TorrentSearchPanel } from './components/TorrentSearchPanel.tsx';
 
 export default function App() {
   // Navigation & Theme
-  const [activeTab, setActiveTab] = useState<'search' | 'transfers' | 'files' | 'shared' | 'activity' | 'storage'>(() => {
+  const [activeTab, setActiveTab] = useState<'search' | 'files' | 'shared' | 'activity' | 'storage'>(() => {
     try {
       const saved = window.localStorage.getItem('seedflow_active_tab');
-      return saved === 'search' || saved === 'transfers' || saved === 'files' || saved === 'shared' || saved === 'activity' || saved === 'storage'
+      return saved === 'search' || saved === 'files' || saved === 'shared' || saved === 'activity' || saved === 'storage'
         ? saved
         : 'search';
     } catch {
@@ -455,7 +455,7 @@ export default function App() {
       setSeedrAddBlockedNotice(
         'A Seedr download is already in progress. Free Seedr accounts allow one parallel download. Wait for it to finish before adding another magnet link.'
       );
-      setActiveTab('transfers');
+      setActiveTab('files');
       window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
       return;
     }
@@ -1643,23 +1643,6 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('transfers')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
-              activeTab === 'transfers'
-                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-            }`}
-          >
-            <Download className="w-4 h-4" />
-            <span>Transfers & Seedbox</span>
-            {activeDownloadsCount > 0 && (
-              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${activeTab === 'transfers' ? 'bg-slate-950 text-cyan-400' : 'bg-cyan-500/20 text-cyan-300'}`}>
-                {activeDownloadsCount}
-              </span>
-            )}
-          </button>
-
-          <button
             onClick={() => setActiveTab('activity')}
             className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
               activeTab === 'activity'
@@ -1723,32 +1706,9 @@ export default function App() {
           <TorrentSearchPanel onAdd={handleSearchAdd} />
         </div>
 
-        {/* TAB 1: TRANSFERS & SEEDBOX */}
-        {activeTab === 'transfers' && (
+        {/* TAB 2: MY CLOUD FILES */}
+        {activeTab === 'files' && (
           <div className="space-y-4">
-            {/* Action header */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-slate-900 border border-slate-800">
-              <div>
-                <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
-                  <Download className="w-5 h-5 text-cyan-400" />
-                  <span>Ongoing Downloads & Active Torrents</span>
-                </h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  High-speed server torrent downloader with real-time ETA, selective files.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => openAddMagnet()}
-                  className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-md shadow-cyan-500/20 transition"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Add Magnet</span>
-                </button>
-              </div>
-            </div>
-
             {seedrNotice && seedrNotice.status !== 'completed' && (
               <div className="p-4 rounded-2xl bg-slate-900 border border-emerald-500/25 shadow-lg shadow-emerald-500/5">
                 <div className="flex items-start justify-between gap-3">
@@ -1794,12 +1754,6 @@ export default function App() {
               </div>
             )}
 
-          </div>
-        )}
-
-        {/* TAB 2: MY CLOUD FILES */}
-        {activeTab === 'files' && (
-          <div className="space-y-4">
             {/* Persistent Seedr Library */}
             <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/20">
               {seedrDeleteNotice && (
@@ -2465,19 +2419,6 @@ export default function App() {
           >
             <Search className="w-5 h-5" />
             <span className="text-[9px] font-semibold">Search</span>
-          </button>
-
-          <button
-            onClick={() => { setActiveTab('transfers'); setIsMobileMoreOpen(false); }}
-            className={`relative flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${activeTab === 'transfers' ? 'text-cyan-400' : 'text-slate-400'}`}
-          >
-            <Download className="w-5 h-5" />
-            <span className="text-[9px] font-semibold">Transfers</span>
-            {activeDownloadsCount > 0 && (
-              <span className="absolute top-0.5 right-[23%] min-w-4 h-4 px-1 rounded-full bg-cyan-500 text-slate-950 text-[8px] font-black flex items-center justify-center">
-                {activeDownloadsCount}
-              </span>
-            )}
           </button>
 
           <button
