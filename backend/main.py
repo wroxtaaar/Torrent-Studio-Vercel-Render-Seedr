@@ -2749,21 +2749,10 @@ async def seedr_add(body: MagnetRequest):
                 f"This torrent requires {requested_size} bytes, but Seedr has only {remaining_space} bytes remaining. Seedr cannot receive only selected files from a torrent."
             )
 
-    # Fast path: add directly to Seedr. The previous implementation scanned
-    # all existing tasks and inspected folders before every add, which added
-    # several network round trips to the Add button path. Only do the lookup
-    # when Seedr rejects the add as a possible duplicate.
-    try:
-        task = await add_task(magnet, int(folder))
-    except HTTPException as exc:
-        if exc.status_code == 400:
-            existing = await find_task_by_hash(h)
-            if existing:
-                task = existing
-            else:
-                raise
-        else:
-            raise
+    # Add directly to Seedr. Do not fall back to the collection-level
+    # /tasks lookup: that endpoint is unavailable on this free account and a
+    # duplicate/conflict should be surfaced instead of mutating an existing task.
+    task = await add_task(magnet, int(folder))
 
     task = unwrap_seedr_task(task)
     tid = task_id(task)
