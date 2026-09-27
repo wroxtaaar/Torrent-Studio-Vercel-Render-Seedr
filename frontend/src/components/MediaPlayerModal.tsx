@@ -79,7 +79,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     }
   });
   const [downloadSpeedBytes, setDownloadSpeedBytes] = useState(0);
-  const [downloadedBytes, setDownloadedBytes] = useState(0);
 
 
   const resumeTimeRef = useRef(0);
@@ -121,7 +120,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     // the player streams through our same-origin backend, Resource Timing can
     // expose transferSize for the media/range/segment requests.
     setDownloadSpeedBytes(0);
-    setDownloadedBytes(0);
     observedDownloadBytesRef.current = 0;
     observedResourceNamesRef.current = new Set<string>();
 
@@ -168,7 +166,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
       if (total > 0) {
         observedDownloadBytesRef.current += total;
-        setDownloadedBytes(observedDownloadBytesRef.current);
       }
     };
 
@@ -208,6 +205,10 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       }
     };
   }, [file?.id, file?.streamUrl, file?.externalStreamUrl]);
+
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media || !file) return;
 
     setMediaError('');
     setTrackNotice('Preparing browser stream…');
