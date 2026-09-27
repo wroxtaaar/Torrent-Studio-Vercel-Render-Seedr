@@ -149,6 +149,84 @@ def _save_metadata_cache() -> None:
         logger.info("Metadata cache save skipped: %s", exc)
 
 
+async def _fetch_source_torrent_descriptor(source_url: str, info_hash_value: str) -> dict[str, Any] | None:
+    """Try to obtain a real .torrent descriptor from a trusted search detail URL."""
+    if not source_url:
+        return None
+
+    try:
+        parsed = urlsplit(source_url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except Exception:
+        return None
+
+    # Search results currently expose Knaben detail URLs. Keep this narrowly
+    # scoped rather than turning the endpoint into an arbitrary URL fetcher.
+    allowed_hosts = {"knaben.org", "www.knaben.org", "api.knaben.org"}
+    if host not in allowed_hosts:
+        return None
+
+    candidates = [source_url]
+    try:
+        async with httpx.AsyncClient(
+            timeout=8.0,
+            follow_redirects=True,
+            headers={"User-Agent": "Torrent-Studio/1.0"},
+        ) as client:
+            response = await client.get(source_url)
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "").lower()
+
+            if "bittorrent" in content_type or source_url.lower().split("?", 1)[0].endswith(".torrent"):
+                candidates = [str(response.url)]
+                raw = response.content
+            else:
+                html = response.text
+                soup = BeautifulSoup(html, "html.parser")
+                for anchor in soup.find_all("a", href=True):
+                    href = str(anchor.get("href") or "").strip()
+                    absolute = urljoin(str(response.url), href)
+                    if absolute.lower().split("?", 1)[0].endswith(".torrent"):
+                        candidates.append(absolute)
+
+                # Some indexers expose a download attribute without a .torrent
+                # suffix in the visible URL.
+                for anchor in soup.find_all("a", href=True):
+                    href = str(anchor.get("href") or "").strip()
+                    absolute = urljoin(str(response.url), href)
+                    label = " ".join(anchor.stripped_strings).lower()
+                    if "torrent" in label and absolute not in candidates:
+                        candidates.append(absolute)
+
+                raw = None
+
+            for candidate in candidates[:8]:
+                try:
+                    if raw is None or candidate != str(response.url):
+                        descriptor = await client.get(candidate)
+                        descriptor.raise_for_status()
+                        candidate_type = descriptor.headers.get("content-type", "").lower()
+                        body = descriptor.content
+                    else:
+                        candidate_type = content_type
+                        body = raw
+
+                    if len(body) > 8 * 1024 * 1024:
+                        continue
+                    if body.startswith(b"d") and b"4:info" in body:
+                        return _metadata_from_torrent_bytes(
+                            body,
+                            info_hash_value,
+                            "search_torrent_descriptor",
+                        )
+                except Exception:
+                    continue
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.info("Direct torrent descriptor lookup failed: %s", exc)
+
+    return None
+
+
 def _metadata_from_torrent_bytes(raw: bytes, info_hash_value: str, source: str) -> dict[str, Any]:
     meta = decode_torrent_metadata(raw)
     info = meta.get(b"info")
@@ -2790,6 +2868,14 @@ async def seedr_inspect_magnet(body: dict[str, Any]):
     cached = _metadata_cache.get(h)
     if cached:
         return cached
+
+    # Search results can carry a detail URL. When that page exposes a real
+    # .torrent descriptor, use it before touching DHT/trackers.
+    source_url = str(body.get("sourceUrl") or body.get("infoUrl") or "").strip()
+    if source_url:
+        descriptor_result = await _fetch_source_torrent_descriptor(source_url, h)
+        if descriptor_result:
+            return descriptor_result
 
     job_id = h
     existing = _metadata_jobs.get(job_id)
