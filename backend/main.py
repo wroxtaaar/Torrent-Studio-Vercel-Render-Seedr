@@ -462,16 +462,16 @@ async def seedr_task(tid: str):
         progress = 100
     files = await task_contents(tid)
     folder_id = str(task.get("folder_created_id") or (files[0].get("folderId") if files else ""))
-    folder_name = await folder_name(folder_id) if folder_id else ""
+    folderNameValue = await folder_name(folder_id) if folder_id else ""
     for f in files:
-        f["folderPath"] = "/Torrent Studio" + ("/" + folder_name if folder_name else "")
+        f["folderPath"] = "/Torrent Studio" + ("/" + folderNameValue if folderNameValue else "")
         f["url"] = None
         if f["id"]:
             try:
                 f["url"] = (await download_url(f["id"]))["url"]
             except HTTPException:
                 pass
-    return {"taskId": tid, "name": str(task.get("title") or task.get("name") or ""), "folderName": folder_name, "folderId": folder_id, "status": "completed" if complete else "downloading", "progress": progress, "task": task, "files": files, "downloadUrl": next((f["url"] for f in files if f.get("url")), None)}
+    return {"taskId": tid, "name": str(task.get("title") or task.get("name") or ""), "folderName": folderNameValue, "folderId": folder_id, "status": "completed" if complete else "downloading", "progress": progress, "task": task, "files": files, "downloadUrl": next((f["url"] for f in files if f.get("url")), None)}
 
 @app.get("/api/seedr/files")
 async def seedr_files():
