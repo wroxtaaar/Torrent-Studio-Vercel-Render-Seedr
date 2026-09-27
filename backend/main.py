@@ -307,6 +307,101 @@ def _normalize_title(value: str) -> str:
     return " ".join(_search_tokens(value))
 
 
+async def search_yts_movies(query: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Search YTS directly so movie searches are not lost in aggregate ranking."""
+    movie_query = re.sub(
+        r"\b(?:19|20)\d{2}\b|\b(?:2160p|1440p|1080p|720p|480p|4k|8k)\b|\b(?:webrip|web-dl|bluray|brrip|x264|x265|h264|h265|hevc|hdr)\b",
+        " ",
+        query,
+        flags=re.I,
+    )
+    movie_query = re.sub(r"\s+", " ", movie_query).strip()
+    if not movie_query:
+        return []
+
+    payload = None
+    async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
+        for host in ("yts.mx", "yts.am", "yts.rs"):
+            try:
+                response = await client.get(
+                    f"https://{host}/api/v2/list_movies.json",
+                    params={"query_term": movie_query, "limit": "50"},
+                    headers={"Accept": "application/json"},
+                )
+                response.raise_for_status()
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    payload = parsed
+                    break
+            except (httpx.HTTPError, ValueError):
+                continue
+
+    if not isinstance(payload, dict):
+        return []
+
+    target_tokens = _search_tokens(movie_query)
+    results: list[dict[str, Any]] = []
+    for movie in (payload.get("data") or {}).get("movies") or []:
+        if not isinstance(movie, dict):
+            continue
+        title = str(movie.get("title_long") or movie.get("title") or "").strip()
+        if not title:
+            continue
+        title_tokens = _normalize_title(title)
+        if target_tokens and not all(token in title_tokens for token in target_tokens):
+            continue
+
+        released = movie.get("date_uploaded_unix")
+        try:
+            from datetime import datetime, timezone
+            published = datetime.fromtimestamp(
+                int(released), tz=timezone.utc
+            ).isoformat() if released else ""
+        except Exception:
+            published = ""
+
+        for torrent in movie.get("torrents") or []:
+            if not isinstance(torrent, dict):
+                continue
+            h = str(torrent.get("hash") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", h):
+                continue
+            quality = str(torrent.get("quality") or "").strip()
+            kind = str(torrent.get("type") or "").strip()
+            suffix = " ".join(x for x in (quality, kind) if x)
+            display_title = f"{title} [{suffix}]" if suffix else title
+            magnet = (
+                f"magnet:?xt=urn:btih:{h}&dn={quote(display_title, safe='')}"
+            )
+            for tracker in (
+                "udp://tracker.opentrackr.org:1337/announce",
+                "udp://open.stealth.si:80/announce",
+            ):
+                magnet += "&tr=" + quote(tracker, safe="")
+
+            results.append({
+                "guid": f"yts-{h}",
+                "title": display_title,
+                "size": int(float(torrent.get("size_bytes") or 0)),
+                "seeders": int(torrent.get("seeds") or 0),
+                "leechers": int(torrent.get("peers") or 0),
+                "indexer": "yts.mx",
+                "protocol": "torrent",
+                "publishDate": published,
+                "magnetUrl": magnet,
+                "infoHash": h,
+                "downloadUrl": magnet,
+                "infoUrl": "",
+                "sourceUrl": "",
+            })
+
+    results.sort(
+        key=lambda row: (row["seeders"] + row["leechers"], row["publishDate"]),
+        reverse=True,
+    )
+    return results[:limit]
+
+
 async def search_tv_eztv(query: str, limit: int = 30) -> list[dict[str, Any]]:
     tv_query = _tvmaze_query(query)
     if not tv_query:
@@ -423,16 +518,23 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
             response = await client.post(
                 search_url,
-                params={"query": query, "max_items": limit, "per_source": 15},
+                # Fetch a broad candidate pool. We do relevance filtering here
+                # instead of letting global seed counts hide exact title matches.
+                params={"query": query, "max_items": 200, "per_source": 50},
                 headers={"Accept": "application/json"},
             )
-
-        try:
-            tv_results = await search_tv_eztv(query, limit=30)
-        except Exception:
-            tv_results = []
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"Torrent search service unavailable: {exc}") from exc
+
+    tv_results, movie_results = await asyncio.gather(
+        search_tv_eztv(query, limit=100),
+        search_yts_movies(query, limit=100),
+        return_exceptions=True,
+    )
+    if isinstance(tv_results, BaseException):
+        tv_results = []
+    if isinstance(movie_results, BaseException):
+        movie_results = []
 
     if response.status_code >= 400:
         detail = response.text.strip()
@@ -449,24 +551,32 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         raise HTTPException(502, "Torrent search service returned an invalid result set")
 
-    if tv_results:
-        # When an exact TV show is identified, suppress aggregate results that
-        # do not contain every title token. The show-specific EZTV releases
-        # remain authoritative for that TV title.
-        tokens = _search_tokens(_tvmaze_query(query))
-        aggregate = [
-            item for item in payload
-            if isinstance(item, dict)
-            and all(
-                token in _normalize_title(
-                    str(item.get("filename") or item.get("title") or "")
-                )
-                for token in tokens
-            )
-        ]
-        payload_items = tv_results + aggregate
-    else:
-        payload_items = payload
+    tokens = _search_tokens(
+        re.sub(r"\b(?:19|20)\d{2}\b", " ", _tvmaze_query(query))
+    )
+
+    # Keep aggregate candidates strictly media-focused and title-relevant.
+    # This prevents anime, games, music and unrelated high-seed torrents from
+    # appearing just because they share one generic search token.
+    aggregate_items = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("filename") or item.get("title") or "")
+        category = str(item.get("category") or "").lower()
+        normalized_title = _normalize_title(title)
+        if tokens and not all(token in normalized_title for token in tokens):
+            continue
+        if category and any(
+            blocked in category
+            for blocked in ("anime", "games", "music", "software", "books")
+        ):
+            continue
+        if category and "video" not in category and "movie" not in category and "tv" not in category:
+            continue
+        aggregate_items.append(item)
+
+    payload_items = list(tv_results) + list(movie_results) + aggregate_items
 
     results: list[dict[str, Any]] = []
     seen_hashes: set[str] = set()
@@ -499,6 +609,7 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
             "seeders": int(item.get("seeders") or 0),
             "leechers": int(item.get("leechers") or 0),
             "indexer": source,
+            "category": str(item.get("category") or ""),
             "protocol": "torrent",
             "publishDate": str(item.get("date") or ""),
             "magnetUrl": magnet or None,
