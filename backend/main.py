@@ -91,7 +91,28 @@ _metadata_jobs: dict[str, dict[str, Any]] = {}
 _libtorrent_session: Any | None = None
 _libtorrent_session_lock: asyncio.Lock | None = None
 
+class SeedrError(Exception):
+    def __init__(self, code: str, status_code: int, detail: str):
+        self.code = code
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(detail)
+
+
 app = FastAPI(title=APP_NAME)
+
+@app.exception_handler(SeedrError)
+async def handle_seedr_error(request: Request, exc: SeedrError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "detail": exc.detail,
+            "code": exc.code,
+            "provider": "seedr",
+        },
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -802,7 +823,24 @@ async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
         )
 
     if isinstance(data, dict) and str(data.get("error") or "").strip() not in ("", "0"):
-        raise HTTPException(502, f"Seedr legacy list_contents failed: {data.get('error')}")
+        raw_error = str(data.get("error") or "").strip().lower()
+        if "access_denied" in raw_error or "access denied" in raw_error:
+            raise SeedrError(
+                "SEEDR_LIBRARY_ACCESS_DENIED",
+                403,
+                "Seedr denied access to the account library. The token is recognized, but this library operation is not permitted.",
+            )
+        if "unauthor" in raw_error or "invalid token" in raw_error:
+            raise SeedrError(
+                "SEEDR_TOKEN_REJECTED",
+                401,
+                "Seedr rejected the API token. Generate a fresh Seedr API token and update SEEDR_API_TOKEN in Render.",
+            )
+        raise SeedrError(
+            "SEEDR_API_ERROR",
+            502,
+            f"Seedr legacy library request failed: {data.get('error')}",
+        )
 
     return data
 
@@ -840,7 +878,7 @@ async def seedr_root_request() -> Any:
     return data
 
 
-def seedr_error_message(status_code: int, data: Any, raw: str) -> str:
+def seedr_problem(status_code: int, data: Any, raw: str) -> tuple[str, int, str]:
     reason = ""
     if isinstance(data, dict):
         reason = str(
@@ -851,16 +889,53 @@ def seedr_error_message(status_code: int, data: Any, raw: str) -> str:
             or data.get("detail")
             or ""
         ).strip()
-    normalized = reason.lower().replace("_", " ")
-    if status_code == 401:
-        return "Seedr authentication failed. Check the Seedr API token configured in Render."
-    if status_code == 403:
-        return reason or "Seedr denied this operation for the current account or token."
-    if status_code == 413 or "not enough space" in normalized or "not_enough_space" in normalized:
-        return "Not enough storage space in your Seedr account."
+
+    normalized = reason.lower().replace("_", " ").strip()
+
+    if status_code == 401 or "unauthorized" in normalized or normalized in {"invalid token", "token expired", "token invalid"}:
+        return (
+            "SEEDR_TOKEN_REJECTED",
+            401,
+            "Seedr rejected the API token. Generate a fresh Seedr API token and update SEEDR_API_TOKEN in Render.",
+        )
+
+    if status_code == 403 or normalized in {"access denied", "forbidden", "access_denied"}:
+        return (
+            "SEEDR_LIBRARY_ACCESS_DENIED",
+            403,
+            "Seedr denied access to this library operation. The API token is valid, but this operation/folder is not permitted.",
+        )
+
+    if status_code == 413 or normalized == "not enough space" or "not enough space" in normalized:
+        return (
+            "SEEDR_QUOTA_UNAVAILABLE",
+            413,
+            "Seedr reports insufficient storage space for this operation.",
+        )
+
     if status_code == 429:
-        return "Seedr rate limit reached. Please wait a moment and try again."
-    return reason or raw[:500] or f"Seedr API request failed (HTTP {status_code})"
+        return (
+            "SEEDR_QUOTA_UNAVAILABLE",
+            429,
+            "Seedr rate limit reached. Please wait a moment and try again.",
+        )
+
+    if status_code >= 500:
+        return (
+            "SEEDR_QUOTA_UNAVAILABLE",
+            status_code,
+            "Seedr is temporarily unavailable. Please try again in a moment.",
+        )
+
+    return (
+        "SEEDR_API_ERROR",
+        status_code,
+        reason or raw[:500] or f"Seedr API request failed (HTTP {status_code})",
+    )
+
+
+def seedr_error_message(status_code: int, data: Any, raw: str) -> str:
+    return seedr_problem(status_code, data, raw)[2]
 
 async def seedr_request(path: str, method: str = "GET", body: Any = None, form: bool = False) -> Any:
     if not SEEDR_TOKEN:
@@ -883,16 +958,8 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
     except Exception:
         data = raw
     if response.status_code >= 400:
-        raise HTTPException(
-            413 if (
-                response.status_code == 413
-                or (
-                    isinstance(data, dict)
-                    and str(data.get("reason_phrase") or "").strip().lower() == "not_enough_space"
-                )
-            ) else response.status_code,
-            seedr_error_message(response.status_code, data, raw),
-        )
+        code, status_code, detail = seedr_problem(response.status_code, data, raw)
+        raise SeedrError(code, status_code, detail)
     if isinstance(data, dict):
         soft = str(data.get("reason_phrase") or "").strip().lower()
         if soft == "not_enough_space":
@@ -2410,16 +2477,32 @@ async def seedr_quota():
     used = 0
     try:
         max_space, used = extract_space_stats(await seedr_request("/user"))
-    except HTTPException as exc:
+    except SeedrError as exc:
+        # A rejected token or explicit library denial is actionable and should
+        # not be mislabeled as a generic quota outage.
+        if exc.code in {"SEEDR_TOKEN_REJECTED", "SEEDR_LIBRARY_ACCESS_DENIED"}:
+            raise
         logger.info("Seedr /user quota lookup failed (%s); trying /me/quota", exc.status_code)
         try:
             max_space, used = extract_space_stats(await seedr_request("/me/quota"))
-        except HTTPException as fallback_exc:
-            logger.warning("Seedr quota lookup failed: /user=%s /me/quota=%s", exc.status_code, fallback_exc.status_code)
-            raise HTTPException(503, "Seedr quota information is temporarily unavailable") from fallback_exc
+        except SeedrError as fallback_exc:
+            logger.warning(
+                "Seedr quota lookup failed: /user=%s /me/quota=%s",
+                exc.status_code,
+                fallback_exc.status_code,
+            )
+            raise SeedrError(
+                "SEEDR_QUOTA_UNAVAILABLE",
+                503,
+                "Seedr quota information is currently unavailable. The token is present, but account storage information could not be read.",
+            ) from fallback_exc
 
     if max_space <= 0 or used < 0 or used > max_space:
-        raise HTTPException(503, "Seedr quota information is temporarily unavailable")
+        raise SeedrError(
+            "SEEDR_QUOTA_UNAVAILABLE",
+            503,
+            "Seedr returned no usable storage quota. Account storage information is currently unavailable.",
+        )
 
     remaining = max(0, max_space - used)
     return {
@@ -3145,7 +3228,7 @@ async def get_seedr_metadata_tree(force_refresh: bool = False) -> dict[str, Any]
                     folder_name_overrides[task_folder_id] = (
                         _seedr_torrent_names.get(task_folder_id) or task_name
                     )
-        except HTTPException:
+        except (HTTPException, SeedrError):
             # Folder metadata remains usable even when task-name lookup fails.
             pass
 
