@@ -158,8 +158,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const updateDownloadStats = () => {
       let total = 0;
       for (const entry of getMatchingEntries()) {
-        if (observedResourceNamesRef.current.has(entry.name)) continue;
-        observedResourceNamesRef.current.add(entry.name);
+        const entryKey = entry.name + '|' + entry.startTime;
+        if (observedResourceNamesRef.current.has(entryKey)) continue;
+        observedResourceNamesRef.current.add(entryKey);
         const bytes = Number(entry.transferSize || entry.encodedBodySize || 0);
         if (bytes > 0) total += bytes;
       }
