@@ -2396,7 +2396,7 @@ export default function App() {
                           setActiveMediaFile(f);
                           setIsPlayerMinimized(false);
                         }}
-                        streamLoading={f.ownerId === 'seedr' && seedrStreamLoadingId === f.id}
+                        streamLoading={file.ownerId === 'seedr' && seedrStreamLoadingId === file.id}
                         onRename={(f) => setRenameItem({ id: f.id, name: f.name, isFolder: false })}
                         onMove={(f) => setMoveFile(f)}
                         canEdit={activeUser?.role !== 'viewer'}
