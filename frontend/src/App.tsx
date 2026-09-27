@@ -584,77 +584,6 @@ export default function App() {
         )
       );
 
-      const completedFolderId = String(seedrNotice?.folderId || '').trim();
-
-      void Promise.all([
-        api.getSeedrQuota().then(quota => {
-          if (!quota?.configured) return;
-          setSeedrQuota({
-            maxSpace: quota.maxSpace,
-            usedSpace: quota.usedSpace,
-            remainingSpace: quota.remainingSpace
-          });
-        }).catch(error => {
-          console.warn('Failed to refresh Seedr quota:', error);
-        }),
-
-        ...result.folders.map(async folder => {
-          const folderKey = String(folder.folderId || folder.id);
-          try {
-            const contents = await api.getSeedrFolderContents(folderKey);
-            const mapped = contents.files.map(file => ({
-              id: file.id,
-              streamId: file.streamId,
-              name: file.name,
-              size: Number(file.size) || 0,
-              folderId: file.folderId || folderKey,
-              folderPath: folder.path,
-            }));
-
-            setSeedrFolderContentsCache(prev => ({
-              ...prev,
-              [folderKey]: mapped,
-            }));
-          } catch (error) {
-            console.warn('Failed to prefetch Seedr folder:', folder.name, error);
-          }
-        })
-      ]).finally(() => {
-        setSeedrPrefetchLoading(false);
-      });
-
-      // When a torrent has just completed, fetch that folder's files as a
-      // priority request instead of waiting for the other folders.
-      if (completedFolderId) {
-        const completedFolder = result.folders.find(
-          folder => String(folder.folderId || folder.id) === completedFolderId
-        );
-        if (completedFolder) {
-          void api.getSeedrFolderContents(completedFolderId).then(contents => {
-            const mapped = contents.files.map(file => ({
-              id: file.id,
-              streamId: file.streamId,
-              name: file.name,
-              size: Number(file.size) || 0,
-              folderId: file.folderId || completedFolderId,
-              folderPath: completedFolder.path,
-            }));
-
-            setSeedrFolderContentsCache(prev => ({
-              ...prev,
-              [completedFolderId]: mapped,
-            }));
-
-            if (selectedSeedrFolderId === completedFolderId) {
-              setSeedrFiles(mapped);
-              setSeedrFolderContentsLoading(false);
-            }
-          }).catch(error => {
-            console.warn('Failed to load completed Seedr folder immediately:', error);
-          });
-        }
-      }
-
       // Do not clear the existing file rows during refresh. React keeps the
       // current visible component intact while fresh internal details arrive.
       // The cache effect below swaps them in as soon as they are available.
@@ -666,7 +595,7 @@ export default function App() {
     }
 
     return result;
-  }, [rememberSeedrTorrentName, seedrNotice?.folderId, selectedSeedrFolderId]);
+  }, [rememberSeedrTorrentName]);
 
   // Keep an opened folder synchronized with the background prefetch cache.
   // Changing the selected folder no longer reruns the entire library request.
@@ -1157,11 +1086,38 @@ export default function App() {
         const refreshCompletedLibrary = async () => {
           for (let attempt = 0; attempt < 3; attempt += 1) {
             const refreshed = await loadSeedrLibrary();
-            if (completedFolderId && refreshed?.folders?.some(
+            const completedFolder = refreshed?.folders?.find(
               folder => String(folder.folderId || folder.id) === completedFolderId
-            )) {
-              // The priority folder request inside loadSeedrLibrary handles the
-              // file details. No need to wait for every other folder.
+            );
+
+            if (completedFolder) {
+              // Fetch the newly completed folder immediately so its file rows,
+              // stream IDs, sizes, and download actions are available without
+              // waiting for the rest of the library prefetch.
+              try {
+                const contents = await api.getSeedrFolderContents(completedFolderId);
+                const mapped = contents.files.map(file => ({
+                  id: file.id,
+                  streamId: file.streamId,
+                  name: file.name,
+                  size: Number(file.size) || 0,
+                  folderId: file.folderId || completedFolderId,
+                  folderPath: completedFolder.path,
+                }));
+
+                setSeedrFolderContentsCache(prev => ({
+                  ...prev,
+                  [completedFolderId]: mapped,
+                }));
+
+                if (selectedSeedrFolderId === completedFolderId) {
+                  setSeedrFiles(mapped);
+                  setSeedrFolderContentsLoading(false);
+                }
+              } catch (error) {
+                console.warn('Failed to load completed Seedr file details:', error);
+              }
+
               break;
             }
 
