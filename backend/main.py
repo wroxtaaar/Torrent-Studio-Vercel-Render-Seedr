@@ -1109,11 +1109,10 @@ async def seedr_file_stream(
     if type == "video":
         # Validate the upstream first so the frontend gets a clear API error
         # instead of a generic manifestLoadError in Hls.js.
-        manifest, final_url = await _fetch_seedr_hls_manifest(file_id)
+        await _fetch_seedr_hls_manifest(file_id)
         return {
             "url": "/api/seedr/hls/" + quote(file_id, safe=""),
             "name": name or file_id,
-            "upstream": final_url,
             "protocol": "hls",
         }
 
@@ -1131,7 +1130,8 @@ async def seedr_hls_manifest(file_id: str):
         raise HTTPException(503, "Seedr is not configured")
 
     manifest, final_url = await _fetch_seedr_hls_manifest(file_id)
-    _, allowed_hosts = await _get_hls_source(file_id)
+    cached = _seedr_hls_sources.get(file_id)
+    allowed_hosts = cached[2] if cached else {urlsplit(final_url).hostname.lower()}
     rewritten = _rewrite_hls_manifest(file_id, manifest, final_url)
 
     return Response(
@@ -1146,7 +1146,7 @@ async def seedr_hls_manifest(file_id: str):
 
 
 @app.get("/api/seedr/hls/{file_id}/resource")
-async def seedr_hls_resource(file_id: str, u: str = Query(...), request: Request | None = None):
+async def seedr_hls_resource(file_id: str, u: str = Query(...), request: Request):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
 
