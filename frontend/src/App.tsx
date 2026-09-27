@@ -104,7 +104,16 @@ export default function App() {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [activeUser, setActiveUser] = useState<UserProfile | null>(null);
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
-  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+  const activityStorageKey = 'seedflow_activity_logs';
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(activityStorageKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [qbtSettings, setQbtSettings] = useState<QbtSettings | null>(null);
   const [cleanupSettings, setCleanupSettings] = useState<CleanupSettings | null>(null);
@@ -482,7 +491,13 @@ export default function App() {
       setActiveUser(uData.activeUser);
       setStorageStats(sStats);
       setFolders(foldData);
-      setActivityLogs(logs);
+      try {
+        const rawLocalLogs = window.localStorage.getItem(activityStorageKey);
+        const localLogs = rawLocalLogs ? JSON.parse(rawLocalLogs) : [];
+        setActivityLogs(Array.isArray(localLogs) && localLogs.length ? localLogs : logs);
+      } catch {
+        setActivityLogs(logs);
+      }
       setNotifications(notifs);
       setQbtSettings(qbt);
       setCleanupSettings(cleanup);
@@ -743,6 +758,16 @@ export default function App() {
   }, [currentFolder]);
 
   // Actions
+  const appendActivityLog = useCallback((log: ActivityLog) => {
+    setActivityLogs(prev => {
+      const next = [log, ...prev].slice(0, 100);
+      try {
+        window.localStorage.setItem(activityStorageKey, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
   const handleSearchAdd = async (source: string, size: number, title: string, infoHash?: string) => {
     const trimmedSource = source.trim();
     const seedrSource =
@@ -898,6 +923,27 @@ export default function App() {
       } else {
         setSeedrNotice(null);
       }
+      if (result.backend === 'seedr') {
+        const loggedName =
+          String(torrentName || '').trim() ||
+          String(result.seedrResponse?.name || result.seedrResponse?.task?.name || '').trim() ||
+          'Torrent';
+
+        const taskId = result.seedrTaskId ?? result.seedrResponse?.task_id ?? result.seedrResponse?.id ?? '';
+        const folderId = result.seedrFolderId ?? result.seedrResponse?.folder_id ?? result.seedrResponse?.task?.folder_id ?? '';
+
+        appendActivityLog({
+          id: `seedr-add-${taskId || Date.now()}-${Date.now()}`,
+          timestamp: Date.now(),
+          type: 'torrent',
+          userName: activeUser?.name || 'Seedr User',
+          userId: activeUser?.id || 'seedr-user',
+          action: 'Torrent added to Seedr',
+          details: `${loggedName}${taskId ? ` • Task ${taskId}` : ''}${folderId ? ` • Folder ${folderId}` : ''} • Auto-delete in 2 hours`,
+          status: 'success'
+        });
+      }
+
       // The add response is the important operation. Refresh secondary UI
       // state in the background so the Add button does not stay blocked on
       // extra qBittorrent/Seedr requests.
@@ -1467,7 +1513,13 @@ export default function App() {
     const f = await api.getFiles(currentFolder);
     setFiles(f);
     const logs = await api.getLogs();
-    setActivityLogs(logs);
+    try {
+      const rawLocalLogs = window.localStorage.getItem(activityStorageKey);
+      const localLogs = rawLocalLogs ? JSON.parse(rawLocalLogs) : [];
+      setActivityLogs(Array.isArray(localLogs) && localLogs.length ? localLogs : logs);
+    } catch {
+      setActivityLogs(logs);
+    }
     return res;
   };
 
@@ -2279,6 +2331,7 @@ export default function App() {
             logs={activityLogs}
             onClearLogs={async () => {
               await api.clearLogs();
+              try { window.localStorage.removeItem(activityStorageKey); } catch {}
               setActivityLogs([]);
             }}
             onRefresh={async () => {
