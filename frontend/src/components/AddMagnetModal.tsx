@@ -1024,7 +1024,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                       Experimental Seedr selection test
                     </div>
                     <p className="text-[10px] text-slate-500 mt-0.5">
-                      Read-only check. It never pauses the torrent and never changes the Seedr file selection.
+                      Experimental write test. It creates/reuses a Seedr task and applies the selected-file bitmap.
                     </p>
                   </div>
                   <button
@@ -1042,7 +1042,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                 {seedrSelectionTestResult && (
                   <div className="mt-2 rounded-lg bg-slate-950 border border-slate-800 p-2.5 text-[10px] text-slate-400">
                     <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      <span>Read endpoint: <strong className="text-emerald-400">HTTP 200</strong></span>
+                      <span>Selection write: <strong className={seedrSelectionTestResult.unwanted ? "text-emerald-400" : "text-amber-400"}>{seedrSelectionTestResult.unwanted ? 'completed' : 'unknown'}</strong></span>
                       <span>Task: <strong className="text-slate-200 font-mono">{seedrSelectionTestResult.taskId}</strong></span>
                       <span>{seedrSelectionTestResult.created ? 'Test task created' : 'Existing task reused'}</span>
                     </div>
@@ -1068,7 +1068,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
           <div className="text-[11px] sm:text-xs text-slate-400 w-full sm:w-auto">
             {selectionReason ? (
               <span className="text-amber-300">
-                Partial transfer to Seedr is not supported
+                Selected files will be sent to Seedr when they fit the available quota
               </span>
             ) : isSingleFile && inspectedFiles.length > 0 ? (
               <span>Ready to download</span>
