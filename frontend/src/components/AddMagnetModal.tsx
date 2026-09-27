@@ -81,6 +81,12 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   const [inspectedHash, setInspectedHash] = useState('');
   const [inspectedTorrentName, setInspectedTorrentName] = useState('');
   const [backgroundMode, setBackgroundMode] = useState(false);
+  const [isTestingSeedrSelection, setIsTestingSeedrSelection] = useState(false);
+  const [seedrSelectionTestResult, setSeedrSelectionTestResult] = useState<{
+    taskId: number | string;
+    created: boolean;
+    unwanted: unknown;
+  } | null>(null);
 
   const inspectTimeoutRef = useRef<any>(null);
   const [copiedMagnet, setCopiedMagnet] = useState(false);
@@ -103,6 +109,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       setError('');
       setShowManifestEditor(false);
       setPasteManifestText('');
+      setSeedrSelectionTestResult(null);
     }
   }, [isOpen, initialMagnet]);
 
@@ -463,6 +470,46 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       window.setTimeout(() => setCopiedMagnet(false), 1600);
     } catch (err: any) {
       setError(err?.message || 'Could not copy the magnet link.');
+    }
+  };
+
+  const handleSeedrSelectionProbe = async () => {
+    if (inspectedFiles.length < 2) {
+      setError('Use a multi-file torrent for the Seedr selection test.');
+      return;
+    }
+
+    try {
+      setIsTestingSeedrSelection(true);
+      setError('');
+      setSeedrSelectionTestResult(null);
+
+      const magnet = await resolveMagnetUri();
+      const quota = await api.getSeedrQuota();
+
+      if (!quota.configured) {
+        throw new Error('Seedr is not configured.');
+      }
+      if (totalTorrentSize > quota.remainingSpace) {
+        throw new Error(
+          `Use a small test torrent that fits Seedr's current free space. This torrent is ${formatBytes(totalTorrentSize)}, while Seedr has ${formatQuotaBytes(quota.remainingSpace)} free.`
+        );
+      }
+
+      const result = await api.inspectSeedrSelection(
+        magnet,
+        inspectedTorrentName || undefined
+      );
+
+      setSeedrSelectionTestResult({
+        taskId: result.taskId,
+        created: Boolean(result.created),
+        unwanted: result.unwanted
+      });
+    } catch (err: any) {
+      setError(err?.message || 'Could not test Seedr selective-download support.');
+    } finally {
+      setIsTestingSeedrSelection(false);
     }
   };
 
@@ -897,6 +944,46 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                 <span>
                   Selected Download Size: <strong className="text-cyan-400 font-mono">{formatBytes(totalSelectedSize)}</strong> / {formatBytes(totalTorrentSize)} total
                 </span>
+              </div>
+
+              <div className="border-t border-slate-800/80 p-3 bg-slate-900/40">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-semibold text-amber-300">
+                      Experimental Seedr selection test
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Read-only check. It does not pause the torrent and does not change file selection.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleSeedrSelectionProbe()}
+                    disabled={isTestingSeedrSelection || isInspecting || totalTorrentSize <= 0}
+                    className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-[11px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {isTestingSeedrSelection
+                      ? 'Testing…'
+                      : 'Test Seedr Selection API'}
+                  </button>
+                </div>
+
+                {seedrSelectionTestResult && (
+                  <div className="mt-2 rounded-lg bg-slate-950 border border-slate-800 p-2.5 text-[10px] text-slate-400">
+                    <div className="flex flex-wrap gap-x-3 gap-y-1">
+                      <span>Read endpoint: <strong className="text-emerald-400">HTTP 200</strong></span>
+                      <span>Task: <strong className="text-slate-200 font-mono">{seedrSelectionTestResult.taskId}</strong></span>
+                      <span>{seedrSelectionTestResult.created ? 'Test task created' : 'Existing task reused'}</span>
+                    </div>
+                    <div className="mt-1 break-all font-mono text-slate-500">
+                      unwanted: {typeof seedrSelectionTestResult.unwanted === 'string'
+                        ? seedrSelectionTestResult.unwanted || '(empty)'
+                        : JSON.stringify(seedrSelectionTestResult.unwanted)}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               </div>
             </div>
           )}
