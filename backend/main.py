@@ -2597,7 +2597,11 @@ async def seedr_add_selected(body: dict[str, Any]):
             ]
             if actual == expected_positions:
                 accepted_bitmap = unwanted_b64
-                verification = actual
+                verification = [
+                    ordered_indexes[position]
+                    for position in actual
+                    if 0 <= position < len(ordered_indexes)
+                ]
                 accepted_bit_order = "msb" if msb_first else "lsb"
                 break
             write_errors.append(
