@@ -251,9 +251,9 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
           <div>
             <div className="font-semibold">{error}</div>
-            {error.toLowerCase().includes('prowlarr') || error.toLowerCase().includes('configured') ? (
+            {error.toLowerCase().includes('configured') ? (
               <div className="text-amber-400/80 mt-1">
-                Configure your Prowlarr API key in the VPS .env file and make sure at least one torrent indexer is enabled.
+                Try the full movie or series title, and include a year or season/episode when needed.
               </div>
             ) : null}
           </div>
