@@ -261,7 +261,7 @@ async def rename_seedr_folder(folder_id: str, name: str) -> bool:
     """Best-effort rename of a Seedr folder to the canonical torrent name."""
     folder_id = str(folder_id or "").strip()
     name = str(name or "").strip()
-    if not folder_id or not name or not folder_id.isdigit():
+    if not folder_id or not name:
         return False
 
     safe_name = name[:255]
