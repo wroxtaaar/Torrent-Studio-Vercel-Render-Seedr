@@ -2610,8 +2610,6 @@ async def seedr_token_diagnostic():
         "tokenFingerprint": fingerprint,
         "checks": {
             "user": await check("/user"),
-            "tasks": await check("/tasks"),
-            "folderRoot": await check("/fs/folder/0/contents"),
         },
     }
 
@@ -2696,17 +2694,6 @@ async def seedr_quota():
         "usedSpace": used,
         "remainingSpace": max(0, max_space - used),
     }
-
-@app.get("/api/seedr/tasks")
-async def seedr_tasks():
-    if not SEEDR_TOKEN:
-        return {"configured": False, "tasks": []}
-    payload = seedr_data(await seedr_request("/tasks"))
-    tasks = []
-    for raw in arr(payload, ("tasks", "torrents")):
-        if isinstance(raw, dict):
-            tasks.append(raw)
-    return {"configured": True, "tasks": tasks}
 
 @app.post("/api/seedr/add")
 async def seedr_add(body: MagnetRequest):
