@@ -297,6 +297,57 @@ def _search_tokens(value: str) -> list[str]:
     return [token for token in re.findall(r"[a-z0-9]+", value.lower()) if token]
 
 
+def _media_search_parts(value: str) -> tuple[str, int | None, int | None]:
+    """Split a media query into title text plus optional season/episode constraints."""
+    q = re.sub(r"\s+", " ", value.strip())
+    season_match = re.search(r"\b(?:season|series)\s*(\d{1,2})\b", q, re.I)
+    episode_match = re.search(r"\bS(\d{1,2})(?:E(\d{1,3}))?\b", q, re.I)
+    season = int(season_match.group(1)) if season_match else (
+        int(episode_match.group(1)) if episode_match else None
+    )
+    episode = (
+        int(season_match.group(1)) if False else None
+    )
+    if episode_match and episode_match.group(2):
+        episode = int(episode_match.group(2))
+
+    title = q
+    title = re.sub(r"\b(?:season|series)\s*\d{1,2}\b", " ", title, flags=re.I)
+    title = re.sub(r"\bS\d{1,2}(?:E\d{1,3})?\b", " ", title, flags=re.I)
+    title = re.sub(
+        r"\b(?:19|20)\d{2}\b|"
+        r"\b(?:2160p|1440p|1080p|720p|480p|4k|8k)\b|"
+        r"\b(?:webrip|web-dl|bluray|brrip|x264|x265|h264|h265|hevc|hdr)\b",
+        " ",
+        title,
+        flags=re.I,
+    )
+    title = re.sub(r"\s+", " ", title).strip()
+    return title, season, episode
+
+
+def _season_episode_match(title: str, season: int | None, episode: int | None) -> bool:
+    if season is None:
+        return True
+
+    upper = title.upper()
+    match = re.search(r"\bS(\d{1,2})(?:E(\d{1,3}))?\b", upper)
+    if match:
+        if int(match.group(1)) != season:
+            return False
+        if episode is not None and (not match.group(2) or int(match.group(2)) != episode):
+            return False
+        return True
+
+    season_word = re.search(r"\bSEASON[\s._-]*(\d{1,2})\b", upper)
+    if season_word:
+        if int(season_word.group(1)) != season:
+            return False
+        return episode is None
+
+    return False
+
+
 def _tvmaze_query(value: str) -> str:
     value = re.sub(r"\bS\d{1,2}(?:E\d{1,3})?.*$", "", value, flags=re.I)
     value = re.sub(r"\b(?:season|series)\s*\d+\b", "", value, flags=re.I)
@@ -404,7 +455,8 @@ async def search_yts_movies(query: str, limit: int = 50) -> list[dict[str, Any]]
 
 
 async def search_tv_eztv(query: str, limit: int = 30) -> list[dict[str, Any]]:
-    tv_query = _tvmaze_query(query)
+    tv_query, _season, _episode = _media_search_parts(query)
+    tv_query = _tvmaze_query(tv_query)
     if not tv_query:
         return []
 
@@ -494,6 +546,13 @@ async def search_tv_eztv(query: str, limit: int = 30) -> list[dict[str, Any]]:
             "infoUrl": "",
             "sourceUrl": "",
         })
+    _, season, episode = _media_search_parts(query)
+    if season is not None:
+        results = [
+            row for row in results
+            if _season_episode_match(row["title"], season, episode)
+        ]
+
     results.sort(
         key=lambda row: (row["seeders"] + row["leechers"], row["publishDate"]),
         reverse=True,
@@ -512,6 +571,9 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
     if not query:
         return []
 
+    normalized_query, season, episode = _media_search_parts(query)
+    aggregate_query = normalized_query or query
+
     base = TORRENT_SEARCH_API_URL
     search_url = f"{base}/torrent/search"
 
@@ -521,7 +583,7 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
                 search_url,
                 # Fetch a broad candidate pool. We do relevance filtering here
                 # instead of letting global seed counts hide exact title matches.
-                params={"query": query, "max_items": 200, "per_source": 50},
+                params={"query": aggregate_query, "max_items": 200, "per_source": 50},
                 headers={"Accept": "application/json"},
             )
     except httpx.HTTPError as exc:
@@ -529,7 +591,7 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
 
     tv_results, movie_results = await asyncio.gather(
         search_tv_eztv(query, limit=100),
-        search_yts_movies(query, limit=100),
+        search_yts_movies(normalized_query, limit=100),
         return_exceptions=True,
     )
     if isinstance(tv_results, BaseException):
@@ -552,9 +614,7 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         raise HTTPException(502, "Torrent search service returned an invalid result set")
 
-    tokens = _search_tokens(
-        re.sub(r"\b(?:19|20)\d{2}\b", " ", _tvmaze_query(query))
-    )
+    tokens = _search_tokens(normalized_query)
 
     # Keep aggregate candidates strictly media-focused and title-relevant.
     # This prevents anime, games, music and unrelated high-seed torrents from
@@ -567,6 +627,10 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
         category = str(item.get("category") or "").lower()
         normalized_title = _normalize_title(title)
         if tokens and not all(token in normalized_title for token in tokens):
+            continue
+        if season is not None and not _season_episode_match(title, season, episode):
+            # Only apply season filtering when the title looks like a TV release.
+            # Movie searches have no season value.
             continue
         if category and any(
             blocked in category
