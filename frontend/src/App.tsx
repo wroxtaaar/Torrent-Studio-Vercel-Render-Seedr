@@ -263,6 +263,9 @@ export default function App() {
   const [seedrDeleteNotice, setSeedrDeleteNotice] = useState<string | null>(null);
   const [copiedSeedrFileId, setCopiedSeedrFileId] = useState<string | null>(null);
   const [seedrAddBlockedNotice, setSeedrAddBlockedNotice] = useState<string | null>(null);
+  // Two-stage Seedr playback UX: first show progress while resolving the
+  // stream URL, then the player shows its own browser-loading state.
+  const [seedrStreamLoadingId, setSeedrStreamLoadingId] = useState<string | null>(null);
   const [seedrSelectionContext, setSeedrSelectionContext] = useState<{
     remainingSpace: number;
     torrentSize: number;
@@ -449,9 +452,19 @@ export default function App() {
 
   // The Files tab is reserved for completed/stored files and folders.
   // Active qBittorrent downloads belong only in the Transfers tab.
-  const visibleFiles = currentFolder === '/' && seedrAllPrefetchedFiles.length > 0
-    ? seedrAllPrefetchedFiles.map(toSeedrStorageFile)
-    : files;
+  const visibleFiles = useMemo(() => {
+    const source = currentFolder === '/' && seedrAllPrefetchedFiles.length > 0
+      ? seedrAllPrefetchedFiles.map(toSeedrStorageFile)
+      : files;
+
+    // Keep root/"outside folder" files deterministic and easy to scan. Folder
+    // contents keep their Seedr order; only the root file list is sorted.
+    if (currentFolder !== '/' || seedrAllPrefetchedFiles.length === 0) return source;
+
+    return [...source].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    );
+  }, [currentFolder, seedrAllPrefetchedFiles, files, toSeedrStorageFile]);
   // Modals & Drawers
   const [isAddMagnetOpen, setIsAddMagnetOpen] = useState(false);
   const [initialMagnet, setInitialMagnet] = useState('');
@@ -1599,6 +1612,11 @@ export default function App() {
   };
 
   const handleStreamSeedrFile = async (file: { id: string; streamId?: string; name: string; size: number; folderId: string; folderPath: string }) => {
+    // Stage 1: the clicked button immediately enters a loading state while
+    // Render resolves the Seedr presentation/proxy URL. The player is opened
+    // only after this step succeeds, so the user never sees an unresponsive
+    // button followed by a blank modal.
+    setSeedrStreamLoadingId(file.id);
     try {
       const type: StorageFile['type'] =
         /\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts)$/i.test(file.name) ? 'video' :
@@ -1634,6 +1652,8 @@ export default function App() {
     } catch (error) {
       console.error('Failed to create Seedr stream URL:', error);
       setSeedrError(error instanceof Error ? error.message : 'Failed to create Seedr stream URL');
+    } finally {
+      setSeedrStreamLoadingId(current => current === file.id ? null : current);
     }
   };
 
@@ -2207,10 +2227,12 @@ export default function App() {
                                   {/\.(mkv|mp4|m4v|webm|mov|avi|m3u8|ts|mp3|wav|flac|aac|ogg|m4a)$/i.test(file.name) && (
                                     <button
                                       type="button"
-                                      onClick={() => handleStreamSeedrFile(file)}
-                                      className="px-2.5 py-1.5 rounded-lg bg-cyan-500 text-slate-950 font-bold text-xs hover:bg-cyan-400 transition"
+                                      onClick={() => void handleStreamSeedrFile(file)}
+                                      disabled={seedrStreamLoadingId === file.id}
+                                      className="px-2.5 py-1.5 rounded-lg bg-cyan-500 text-slate-950 font-bold text-xs hover:bg-cyan-400 transition disabled:opacity-60 disabled:cursor-wait flex items-center gap-1.5"
                                     >
-                                      Stream
+                                      {seedrStreamLoadingId === file.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                      {seedrStreamLoadingId === file.id ? 'Preparing…' : 'Stream'}
                                     </button>
                                   )}
                                   <button
@@ -2354,6 +2376,27 @@ export default function App() {
                         file={file}
                         onPlay={(f) => {
                           // Root "My Cloud Files" rows are Seedr files too, but
+                          // they must use the same resolver as the working folder
+                          // view so Vercel + Render always targets the backend.
+                          if (
+                            f.ownerId === 'seedr' &&
+                            (f.type === 'video' || f.type === 'audio')
+                          ) {
+                            void handleStreamSeedrFile({
+                              id: f.id,
+                              streamId: f.streamId || f.id,
+                              name: f.name,
+                              size: f.size,
+                              folderId: '',
+                              folderPath: f.folder || '/'
+                            });
+                            return;
+                          }
+
+                          setActiveMediaFile(f);
+                          setIsPlayerMinimized(false);
+                        }}
+                        streamLoading={f.ownerId === 'seedr' && seedrStreamLoadingId === f.id}
                           // they used to bypass handleStreamSeedrFile and pass a
                           // relative /api/seedr/files/stream URL directly to the
                           // player. That works when the UI is served by Render,
