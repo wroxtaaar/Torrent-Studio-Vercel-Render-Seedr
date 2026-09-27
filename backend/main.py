@@ -763,19 +763,52 @@ def seedr_data(value: Any) -> Any:
         return value["data"]
     return value
 
-def seedr_access_token() -> str:
-    """Extract an OAuth access token only for the legacy resource.php API."""
-    raw = str(SEEDR_TOKEN or "").strip()
+def normalize_seedr_token(value: str) -> str:
+    """Normalize common Seedr API Console token copy formats without logging it."""
+    raw = str(value or "").strip()
     if not raw:
         return ""
+
+    for _ in range(2):
+        if raw.lower().startswith("bearer "):
+            raw = raw[7:].strip()
+            continue
+
+        # A copied JSON response may be either an object or a JSON string.
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, str):
+                raw = parsed.strip()
+                continue
+            if isinstance(parsed, dict):
+                candidate = (
+                    parsed.get("access_token")
+                    or parsed.get("token")
+                    or parsed.get("personal_access_token")
+                )
+                if candidate:
+                    raw = str(candidate).strip()
+                    continue
+        except Exception:
+            pass
+        break
+
+    # Some older Torrent Studio deployments stored the OAuth token as a
+    # base64-encoded JSON object.
     try:
         decoded = base64.b64decode(raw, validate=True).decode("utf-8")
         payload = json.loads(decoded)
         if isinstance(payload, dict) and payload.get("access_token"):
-            return str(payload["access_token"]).strip()
+            raw = str(payload["access_token"]).strip()
     except Exception:
         pass
-    return raw
+
+    return raw.strip().strip('"').strip("'").strip()
+
+
+def seedr_access_token() -> str:
+    """Access token used only by Seedr's legacy resource.php API."""
+    return normalize_seedr_token(SEEDR_TOKEN)
 
 
 async def legacy_seedr_list_contents(folder_id: str = "0") -> Any:
@@ -949,44 +982,69 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
 
     request_path = str(path).lstrip("/")
     url = f"{SEEDR_BASE}/{request_path}"
+    token = normalize_seedr_token(SEEDR_TOKEN)
 
     kwargs: dict[str, Any] = {}
-    headers = {
-        "Authorization": f"Bearer {SEEDR_TOKEN.strip()}",
-        "Accept": "application/json",
-    }
-
     if body is not None:
         if form:
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            headers_base = {"Content-Type": "application/x-www-form-urlencoded"}
             kwargs["data"] = body
         else:
-            headers["Content-Type"] = "application/json"
+            headers_base = {"Content-Type": "application/json"}
             kwargs["json"] = body
+    else:
+        headers_base = {}
 
     async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
-        response = await client.request(method, url, headers=headers, **kwargs)
+        tried_tokens: list[str] = []
+        candidates = [token]
+        # The legacy helper may discover a token hidden in a base64 JSON export.
+        legacy = seedr_access_token()
+        if legacy and legacy != token:
+            candidates.append(legacy)
 
-    raw = response.text
-    try:
-        data = response.json() if raw else None
-    except Exception:
-        data = raw
+        last_status = 0
+        last_data: Any = None
+        last_raw = ""
 
-    if response.status_code >= 400:
-        code, status_code, detail = seedr_problem(response.status_code, data, raw)
-        raise SeedrError(code, status_code, detail)
+        for candidate in candidates:
+            if not candidate or candidate in tried_tokens:
+                continue
+            tried_tokens.append(candidate)
 
-    if isinstance(data, dict):
-        soft = str(data.get("reason_phrase") or "").strip().lower()
-        if soft == "not_enough_space":
-            raise SeedrError(
-                "SEEDR_QUOTA_UNAVAILABLE",
-                413,
-                "Seedr reports insufficient storage space for this operation.",
-            )
+            headers = {
+                "Authorization": f"Bearer {candidate}",
+                "Accept": "application/json",
+                **headers_base,
+            }
+            response = await client.request(method, url, headers=headers, **kwargs)
+            raw = response.text
+            try:
+                data = response.json() if raw else None
+            except Exception:
+                data = raw
 
-    return data
+            if response.status_code < 400:
+                if isinstance(data, dict):
+                    soft = str(data.get("reason_phrase") or "").strip().lower()
+                    if soft == "not_enough_space":
+                        raise SeedrError(
+                            "SEEDR_QUOTA_UNAVAILABLE",
+                            413,
+                            "Seedr reports insufficient storage space for this operation.",
+                        )
+                return data
+
+            last_status, last_data, last_raw = response.status_code, data, raw
+
+            # If a token-export wrapper was copied into Render, retry once with
+            # its extracted access_token before classifying it as rejected.
+            if response.status_code == 401 and candidate != candidates[-1]:
+                continue
+            break
+
+    code, status_code, detail = seedr_problem(last_status, last_data, last_raw)
+    raise SeedrError(code, status_code, detail)
 
 
 def arr(value: Any, keys: tuple[str, ...]) -> list[Any]:
@@ -2448,6 +2506,42 @@ async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, g
 @app.get("/api/health")
 async def api_health():
     return {"name": APP_NAME, "status": "ok"}
+
+@app.get("/api/seedr/token-diagnostic")
+async def seedr_token_diagnostic():
+    if not SEEDR_TOKEN:
+        return {
+            "configured": False,
+            "code": "SEEDR_TOKEN_MISSING",
+            "tokenLength": 0,
+            "tokenFingerprint": None,
+            "checks": {},
+        }
+
+    token = normalize_seedr_token(SEEDR_TOKEN)
+    fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else None
+
+    async def check(path: str) -> dict[str, Any]:
+        try:
+            await seedr_request(path)
+            return {"ok": True, "status": 200}
+        except SeedrError as exc:
+            return {"ok": False, "status": exc.status_code, "code": exc.code, "message": exc.detail}
+        except Exception as exc:
+            return {"ok": False, "status": 0, "code": "LOCAL_ERROR", "message": str(exc)[:200]}
+
+    return {
+        "configured": True,
+        "code": "SEEDR_TOKEN_PRESENT",
+        "tokenLength": len(token),
+        "tokenFingerprint": fingerprint,
+        "checks": {
+            "user": await check("/user"),
+            "tasks": await check("/tasks"),
+            "folderRoot": await check("/fs/folder/0/contents"),
+        },
+    }
+
 
 @app.get("/api/seedr/auth-status")
 async def seedr_auth_status():
