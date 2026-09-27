@@ -1178,7 +1178,7 @@ export default function App() {
       }
 
       setSeedrError(null);
-      const result = await api.getSeedrFileStream(file.name, type);
+      const result = await api.getSeedrFileStream(file.id, file.name, type);
       const syntheticFile: StorageFile = {
         id: `seedr-${file.id}`,
         name: result.name || file.name,
