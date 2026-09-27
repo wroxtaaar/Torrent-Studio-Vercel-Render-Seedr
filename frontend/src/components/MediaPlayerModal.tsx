@@ -59,6 +59,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   const resumePlayingRef = useRef(false);
   const subtitleTrackRef = useRef<HTMLTrackElement>(null);
   const [usingDirectFallback, setUsingDirectFallback] = useState(false);
+  const hlsActiveRef = useRef(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -73,6 +74,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     setIsPlaying(true);
     setMediaError('');
     setUsingDirectFallback(false);
+    hlsActiveRef.current = false;
   }, [file?.id]);
 
   useEffect(() => {
@@ -112,6 +114,10 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         } catch {}
       }
 
+      // A transient native MEDIA_ERR_SRC_NOT_SUPPORTED can be emitted while
+      // Hls.js is attaching MediaSource. Clear any stale overlay once metadata
+      // has successfully arrived.
+      setMediaError('');
       setTrackNotice('');
       if (restorePlaying) {
         media.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
@@ -130,6 +136,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       streamUrl.includes('/api/media/hls/');
 
     if (isHlsStream && isVideo && Hls.isSupported()) {
+      hlsActiveRef.current = true;
       let triedFallback = false;
 
       const startHls = (sourceUrl: string) => {
@@ -139,8 +146,15 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           lowLatencyMode: false,
           backBufferLength: 90,
         });
+        setMediaError('');
         hls.loadSource(sourceUrl);
         hls.attachMedia(media as HTMLMediaElement);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          // Successful manifest parsing means the browser player can proceed.
+          // Do not leave a transient native media error visible.
+          setMediaError('');
+          setTrackNotice('');
+        });
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data?.fatal) return;
 
@@ -184,6 +198,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       media.pause();
       media.removeAttribute('src');
       media.load();
+      hlsActiveRef.current = false;
     };
   }, [file?.id, file?.streamUrl, file?.externalStreamUrl, isVideo, selectedAudioIndex]);
 
@@ -220,6 +235,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   if (!file) return null;
 
   const handleMediaError = () => {
+    // When Hls.js owns the video element, Chrome can briefly report MEDIA_ERR_SRC_NOT_SUPPORTED
+    // while MediaSource is being attached. Hls.js is the authoritative error source in that mode.
+    if (hlsActiveRef.current) return;
     const media = mediaRef.current;
     const code = media && 'error' in media ? media.error?.code : undefined;
     setMediaError(
