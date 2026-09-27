@@ -27,7 +27,10 @@ import {
   QbtSettings
 } from '../types/index.ts';
 
-const API_BASE = String(import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+const API_BASE = (
+  String(import.meta.env.VITE_API_URL || '').trim() ||
+  'https://torrent-studio-vercel-render-seedr.onrender.com'
+).replace(/\/+$/, '');
 const apiFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const value = String(input);
   return fetch(value.startsWith('/') ? API_BASE + value : value, init);
