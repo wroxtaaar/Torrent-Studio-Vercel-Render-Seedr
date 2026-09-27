@@ -696,13 +696,33 @@ export default function App() {
           return null;
         }
         if (!auth.authenticated) {
-          setSeedrError(
-            auth.code === 'SEEDR_TOKEN_REJECTED'
-              ? 'SEEDR_TOKEN_REJECTED: Seedr rejected the configured API token.'
-              : auth.code === 'SEEDR_LIBRARY_ACCESS_DENIED'
-                ? 'SEEDR_LIBRARY_ACCESS_DENIED: Seedr denied the library/auth operation.'
-                : `Seedr authentication check failed: ${auth.message || auth.code}`
-          );
+          try {
+            const diagnostic = await api.getSeedrTokenDiagnostic();
+            const checks = diagnostic?.checks || {};
+            const taskCheck = checks.tasks || {};
+            const userCheck = checks.user || {};
+            const rootCheck = checks.folderRoot || {};
+            const tokenLabel =
+              taskCheck.ok || userCheck.ok
+                ? 'TOKEN_PRESENT_AND_ACCEPTED_BY_SEEDR'
+                : 'TOKEN_REJECTED_BY_SEEDR';
+            const detail = taskCheck.ok
+              ? 'Seedr task API accepted the token; the account/library check is the failing operation.'
+              : rootCheck.code === 'SEEDR_LIBRARY_ACCESS_DENIED'
+                ? 'Seedr authentication reached the API, but library access is denied.'
+                : 'Seedr rejected the token on the task/profile APIs.';
+            setSeedrError(
+              `${tokenLabel}: ${detail} [user=${userCheck.status ?? '?'} tasks=${taskCheck.status ?? '?'} root=${rootCheck.status ?? '?'}]`
+            );
+          } catch {
+            setSeedrError(
+              auth.code === 'SEEDR_TOKEN_REJECTED'
+                ? 'SEEDR_TOKEN_REJECTED: Seedr rejected the configured API token.'
+                : auth.code === 'SEEDR_LIBRARY_ACCESS_DENIED'
+                  ? 'SEEDR_LIBRARY_ACCESS_DENIED: Seedr denied the library/auth operation.'
+                  : `Seedr authentication check failed: ${auth.message || auth.code}`
+            );
+          }
           setSeedrConfigured(true);
           setSeedrLoading(false);
           return null;
