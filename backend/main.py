@@ -1200,12 +1200,17 @@ def direct_folder_summary(folder_id: str, path: str, payload: dict[str, Any]) ->
     }
 
 
-async def build_seedr_metadata_tree(folder_id: str, path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+async def build_seedr_metadata_tree(
+    folder_id: str,
+    path: str,
+    folder_name_overrides: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     Build the first library response from the root and its immediate child
     folders. Child contents are fetched concurrently so folder cards already
     have exact file counts/sizes when the browser receives this response.
     """
+    folder_name_overrides = folder_name_overrides or {}
     payload = await seedr_folder_payload(folder_id)
     summary = direct_folder_summary(folder_id, path, payload)
 
@@ -1216,7 +1221,12 @@ async def build_seedr_metadata_tree(folder_id: str, path: str) -> tuple[dict[str
         child_id = str(raw.get("id") or raw.get("folder_id") or "").strip()
         if not child_id:
             continue
-        child_name = str(raw.get("name") or raw.get("title") or child_id).strip() or child_id
+        folder_override = str(folder_name_overrides.get(child_id) or "").strip()
+        child_name = (
+            folder_override
+            or str(raw.get("name") or raw.get("title") or child_id).strip()
+            or child_id
+        )
         child_path = path.rstrip("/") + "/" + child_name
         child_entries.append((child_id, child_name, raw))
 
@@ -1293,7 +1303,33 @@ async def get_seedr_metadata_tree() -> dict[str, Any]:
         if not root.isdigit():
             return {"configured": True, "root": None, "folders": []}
 
-        root_summary, children = await build_seedr_metadata_tree(root, "/Torrent Studio")
+        # Resolve human-readable torrent names from Seedr task metadata in one
+        # call. The folder contents/counts and task list are independent, so
+        # fetch them concurrently without adding a serial round trip.
+        folder_name_overrides: dict[str, str] = {}
+        try:
+            tasks_payload = seedr_data(await seedr_request("/tasks"))
+            for raw_task in arr(tasks_payload, ("tasks", "torrents")):
+                if not isinstance(raw_task, dict):
+                    continue
+                task_folder_id = str(raw_task.get("folder_created_id") or "").strip()
+                task_name = str(
+                    raw_task.get("title")
+                    or raw_task.get("name")
+                    or raw_task.get("torrent_name")
+                    or ""
+                ).strip()
+                if task_folder_id and task_name:
+                    folder_name_overrides[task_folder_id] = task_name
+        except HTTPException:
+            # Folder metadata remains usable even when task-name lookup fails.
+            pass
+
+        root_summary, children = await build_seedr_metadata_tree(
+            root,
+            "/Torrent Studio",
+            folder_name_overrides,
+        )
         return {
             "configured": True,
             "root": root_summary,
