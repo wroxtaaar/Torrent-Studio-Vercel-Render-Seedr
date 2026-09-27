@@ -232,8 +232,10 @@ _seedr_folder_semaphore = asyncio.Semaphore(SEEDR_FOLDER_CONCURRENCY)
 # Library metadata is shared between the Files explorer and the Seedr Library
 # so opening the Files tab does not trigger the same Seedr tree walk twice.
 SEEDR_METADATA_CACHE_SECONDS = 5
+SEEDR_FOLDER_CACHE_SECONDS = 15
 _seedr_metadata_cache: tuple[float, dict[str, Any]] | None = None
 _seedr_metadata_task: asyncio.Task | None = None
+_seedr_folder_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 async def collect_folder(folder_id: str, path: str = "/", depth: int = 0) -> list[dict[str, Any]]:
     if depth > 8:
@@ -502,15 +504,34 @@ async def seedr_task(tid: str):
     return {"taskId": tid, "name": str(task.get("title") or task.get("name") or ""), "folderName": folderNameValue, "folderId": folder_id, "status": "completed" if complete else "downloading", "progress": progress, "task": task, "files": files, "downloadUrl": next((f["url"] for f in files if f.get("url")), None)}
 
 async def seedr_folder_payload(folder_id: str) -> dict[str, Any]:
-    """Fetch one Seedr folder level only, without resolving download URLs."""
+    """Fetch one Seedr folder level, with a short-lived in-process cache."""
+    folder_id = str(folder_id).strip()
+    if not folder_id:
+        return {}
+
+    now = asyncio.get_running_loop().time()
+    cached = _seedr_folder_cache.get(folder_id)
+    if cached and now - cached[0] < SEEDR_FOLDER_CACHE_SECONDS:
+        return cached[1]
+
     async with _seedr_folder_semaphore:
+        # Re-check after waiting for the semaphore so concurrent callers do
+        # not issue duplicate Seedr requests for the same folder.
+        now = asyncio.get_running_loop().time()
+        cached = _seedr_folder_cache.get(folder_id)
+        if cached and now - cached[0] < SEEDR_FOLDER_CACHE_SECONDS:
+            return cached[1]
+
         try:
             payload = seedr_data(await seedr_request(f"/fs/folder/{quote(folder_id)}/contents"))
         except HTTPException as exc:
             if exc.status_code == 404:
                 return {}
             raise
-    return payload if isinstance(payload, dict) else {}
+
+    result = payload if isinstance(payload, dict) else {}
+    _seedr_folder_cache[folder_id] = (asyncio.get_running_loop().time(), result)
+    return result
 
 
 def direct_folder_summary(folder_id: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -542,60 +563,76 @@ def direct_folder_summary(folder_id: str, path: str, payload: dict[str, Any]) ->
 
 async def build_seedr_metadata_tree(folder_id: str, path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
-    Return metadata for the requested folder level only.
-
-    The first library request must be cheap: it needs enough information to
-    render folder cards (name, file count, total size), but it must not walk
-    every descendant folder. Descendant metadata and actual file rows are
-    loaded when that folder is opened.
+    Build the first library response from the root and its immediate child
+    folders. Child contents are fetched concurrently so folder cards already
+    have exact file counts/sizes when the browser receives this response.
     """
     payload = await seedr_folder_payload(folder_id)
     summary = direct_folder_summary(folder_id, path, payload)
 
-    children: list[dict[str, Any]] = []
+    child_entries: list[tuple[str, str, dict[str, Any]]] = []
     for raw in arr(payload, ("folders", "directories")):
         if not isinstance(raw, dict):
             continue
         child_id = str(raw.get("id") or raw.get("folder_id") or "").strip()
         if not child_id:
             continue
-
         child_name = str(raw.get("name") or raw.get("title") or child_id).strip() or child_id
+        child_path = path.rstrip("/") + "/" + child_name
+        child_entries.append((child_id, child_name, raw))
 
-        # Seedr's folder list may provide size/count metadata directly.
-        child_file_count = 0
-        child_total_size = 0
-        for key in ("files_count", "file_count", "filesCount", "fileCount", "count"):
-            value = raw.get(key)
-            if value is not None:
-                try:
-                    child_file_count = max(0, int(value))
-                    break
-                except (TypeError, ValueError):
-                    pass
-        for key in ("size", "total_size", "totalSize"):
-            value = raw.get(key)
-            if value is not None:
-                try:
-                    child_total_size = max(0, int(float(value)))
-                    break
-                except (TypeError, ValueError):
-                    pass
+    async def load_child(entry: tuple[str, str, dict[str, Any]]) -> dict[str, Any]:
+        child_id, child_name, raw = entry
+        child_payload = await seedr_folder_payload(child_id)
+        child_summary = direct_folder_summary(
+            child_id,
+            path.rstrip("/") + "/" + child_name,
+            child_payload,
+        )
 
-        children.append({
-            "id": child_id,
-            "folderId": child_id,
-            "name": child_name,
-            "path": path.rstrip("/") + "/" + child_name,
-            "filesCount": child_file_count,
-            "totalSize": child_total_size,
-            "folderCount": 0,
-        })
+        # Some Seedr responses expose size/count directly on the folder item;
+        # use those only when the contents endpoint did not provide a value.
+        if child_summary["filesCount"] == 0:
+            for key in ("files_count", "file_count", "filesCount", "fileCount", "count"):
+                value = raw.get(key)
+                if value is not None:
+                    try:
+                        child_summary["filesCount"] = max(0, int(value))
+                        break
+                    except (TypeError, ValueError):
+                        pass
 
-    # If Seedr did not expose counts/sizes on folder entries, do not issue
-    # additional requests here. Those values are resolved by the next call
-    # when the user opens that folder.
+        if child_summary["totalSize"] == 0:
+            for key in ("size", "total_size", "totalSize"):
+                value = raw.get(key)
+                if value is not None:
+                    try:
+                        child_summary["totalSize"] = max(0, int(float(value)))
+                        break
+                    except (TypeError, ValueError):
+                        pass
+
+        child_summary["folderCount"] = len(
+            [x for x in arr(child_payload, ("folders", "directories")) if isinstance(x, dict)]
+        )
+        return child_summary
+
+    children: list[dict[str, Any]] = []
+    if child_entries:
+        results = await asyncio.gather(
+            *(load_child(entry) for entry in child_entries),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, dict):
+                children.append(result)
+
+    # The top-level library badge represents all files in its visible torrent
+    # folders, not just files placed directly in the root.
+    summary["filesCount"] += sum(int(item.get("filesCount") or 0) for item in children)
+    summary["totalSize"] += sum(int(item.get("totalSize") or 0) for item in children)
     summary["folderCount"] = len(children)
+
     return summary, children
 
 
@@ -631,6 +668,7 @@ async def get_seedr_metadata_tree() -> dict[str, Any]:
         return result
     finally:
         _seedr_metadata_task = None
+
 
 @app.get("/api/seedr/library")
 async def seedr_library_metadata():
@@ -714,6 +752,7 @@ async def seedr_task_delete(tid: str):
             raise
         result = await seedr_request(f"/tasks/{quote(tid)}/delete", "POST")
     _seedr_metadata_cache = None
+    _seedr_folder_cache.clear()
     return result
 
 @app.delete("/api/seedr/files/{file_id}")
@@ -721,6 +760,7 @@ async def seedr_file_delete(file_id: str):
     global _seedr_metadata_cache
     result = await seedr_request(f"/fs/file/{quote(file_id)}", "DELETE")
     _seedr_metadata_cache = None
+    _seedr_folder_cache.clear()
     return result
 
 @app.delete("/api/seedr/folders/{folder_id}")
@@ -728,6 +768,7 @@ async def seedr_folder_delete(folder_id: str):
     global _seedr_metadata_cache
     result = await seedr_request(f"/fs/folder/{quote(folder_id)}", "DELETE")
     _seedr_metadata_cache = None
+    _seedr_folder_cache.clear()
     return result
 
 # Compatibility endpoints for the preserved UI. They intentionally do not run
