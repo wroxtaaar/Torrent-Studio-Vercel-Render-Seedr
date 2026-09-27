@@ -1460,11 +1460,8 @@ async def seedr_prepare(body: MagnetRequest):
     tid = task_id(task)
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
-    if created:
-        try:
-            await seedr_request(f"/tasks/{quote(tid)}/pause", "POST")
-        except HTTPException:
-            pass
+    # Seedr pause is intentionally not used. Free accounts may not support
+    # pausing reliably, and metadata preparation must never depend on it.
     files = []
     for _ in range(8):
         try:
@@ -1474,7 +1471,13 @@ async def seedr_prepare(body: MagnetRequest):
         if files:
             break
         await asyncio.sleep(.4)
-    return {"taskId": int(tid) if tid.isdigit() else tid, "name": str(task.get("title") or task.get("name") or ""), "files": files, "created": created, "paused": created}
+    return {
+        "taskId": int(tid) if tid.isdigit() else tid,
+        "name": str(task.get("title") or task.get("name") or ""),
+        "files": files,
+        "created": created,
+        "paused": False,
+    }
 
 @app.post("/api/seedr/add")
 async def seedr_add(body: MagnetRequest):
