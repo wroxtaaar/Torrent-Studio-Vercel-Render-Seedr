@@ -134,7 +134,7 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
 
         {/* Filter Badges */}
         <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 text-xs">
-          {['all', 'download', 'stream', 'cleanup', 'share', 'delete'].map((t) => (
+          {['all', 'torrent', 'download', 'stream', 'cleanup', 'share', 'delete'].map((t) => (
             <button
               key={t}
               onClick={() => setFilterType(t)}
