@@ -18,7 +18,7 @@ import libtorrent as lt
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
@@ -28,8 +28,6 @@ SEEDR_MEDIA_BASE = "https://www.seedr.cc/api"
 SEEDR_V2_BASE = "https://v2.seedr.cc/api/v0.1/p"
 SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
 SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "0").strip() or "0"
-SEEDR_MAX_SIZE_GB = float(os.getenv("SEEDR_MAX_SIZE_GB", "5"))
-SEEDR_MAX_SIZE_BYTES = int(SEEDR_MAX_SIZE_GB * 1024**3)
 SEARCH_STOPWORDS = {"the", "a", "an", "movie", "film", "series", "season", "episode", "web", "show", "tv"}
 TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 KNABEN_API_URL = os.getenv("KNABEN_API_URL", "https://api.knaben.org/v1").rstrip("/")
@@ -776,6 +774,28 @@ async def seedr_root_request() -> Any:
     return data
 
 
+def seedr_error_message(status_code: int, data: Any, raw: str) -> str:
+    reason = ""
+    if isinstance(data, dict):
+        reason = str(
+            data.get("reason_phrase")
+            or data.get("error_description")
+            or data.get("message")
+            or data.get("error")
+            or data.get("detail")
+            or ""
+        ).strip()
+    normalized = reason.lower().replace("_", " ")
+    if status_code == 401:
+        return "Seedr authentication failed. Check the Seedr API token configured in Render."
+    if status_code == 403:
+        return reason or "Seedr denied this operation for the current account or token."
+    if status_code == 413 or "not enough space" in normalized or "not_enough_space" in normalized:
+        return "Not enough storage space in your Seedr account."
+    if status_code == 429:
+        return "Seedr rate limit reached. Please wait a moment and try again."
+    return reason or raw[:500] or f"Seedr API request failed (HTTP {status_code})"
+
 async def seedr_request(path: str, method: str = "GET", body: Any = None, form: bool = False) -> Any:
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
@@ -797,10 +817,16 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
     except Exception:
         data = raw
     if response.status_code >= 400:
-        detail = raw
-        if isinstance(data, dict):
-            detail = data.get("error_description") or data.get("reason_phrase") or data.get("message") or data.get("error") or raw
-        raise HTTPException(response.status_code, str(detail or "Seedr API request failed"))
+        raise HTTPException(
+            413 if (
+                response.status_code == 413
+                or (
+                    isinstance(data, dict)
+                    and str(data.get("reason_phrase") or "").strip().lower() == "not_enough_space"
+                )
+            ) else response.status_code,
+            seedr_error_message(response.status_code, data, raw),
+        )
     if isinstance(data, dict):
         soft = str(data.get("reason_phrase") or "").strip().lower()
         if soft == "not_enough_space":
@@ -2261,6 +2287,10 @@ async def health():
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=50)):
     return await search_1337x(q, limit)
 
+@app.get("/api/health")
+async def api_health():
+    return {"name": APP_NAME, "status": "ok"}
+
 @app.get("/api/seedr/quota")
 async def seedr_quota():
     if not SEEDR_TOKEN:
@@ -2278,6 +2308,7 @@ async def seedr_quota():
             data.get("space_max")
             or account.get("space_max")
             or storage.get("limit")
+            or storage.get("max_space")
             or data.get("maxSpace")
             or 0
         ))
@@ -2285,31 +2316,29 @@ async def seedr_quota():
             data.get("space_used")
             or account.get("space_used")
             or storage.get("used")
+            or storage.get("used_space")
             or data.get("usedSpace")
             or 0
         ))
         return max(0, max_space), max(0, used)
 
-    # The Seedr folder-contents response includes the account's space_max and
-    # space_used fields alongside the filesystem data. Prefer it because it is
-    # the same data source used to build the Library and correctly reflects
-    # storage occupied by completed files/folders.
-    root_id = str(SEEDR_LIBRARY_FOLDER_ID or "").strip()
+    # The documented /user endpoint is the primary source. It is the source
+    # used by the working Seedr integration for free-tier accounts; /me/quota
+    # is retained only as a compatibility fallback for accounts that expose it.
     max_space = 0
     used = 0
-
-    if root_id.isdigit():
+    try:
+        max_space, used = extract_space_stats(await seedr_request("/user"))
+    except HTTPException as exc:
+        logger.info("Seedr /user quota lookup failed (%s); trying /me/quota", exc.status_code)
         try:
-            max_space, used = extract_space_stats(
-                await seedr_request(f"/fs/folder/{quote(root_id)}/contents")
-            )
-        except HTTPException:
-            pass
+            max_space, used = extract_space_stats(await seedr_request("/me/quota"))
+        except HTTPException as fallback_exc:
+            logger.warning("Seedr quota lookup failed: /user=%s /me/quota=%s", exc.status_code, fallback_exc.status_code)
+            raise HTTPException(503, "Seedr quota information is temporarily unavailable") from fallback_exc
 
-    # Fall back to the account quota endpoint if the filesystem response does
-    # not carry the space fields on a particular Seedr API response.
-    if max_space <= 0:
-        max_space, used = extract_space_stats(await seedr_request("/me/quota"))
+    if max_space <= 0 or used < 0 or used > max_space:
+        raise HTTPException(503, "Seedr quota information is temporarily unavailable")
 
     remaining = max(0, max_space - used)
     return {
@@ -2420,14 +2449,46 @@ async def seedr_prepare(body: MagnetRequest):
         "paused": False,
     }
 
+def decode_seedr_unwanted(value: Any, file_count: int, msb_first: bool = False) -> list[int]:
+    raw_value = seedr_data(value)
+    encoded = raw_value if isinstance(raw_value, str) else (
+        raw_value.get("unwanted") if isinstance(raw_value, dict) else None
+    )
+    if not encoded:
+        return []
+    try:
+        raw = base64.b64decode(str(encoded), validate=True)
+    except Exception:
+        return []
+
+    unwanted: list[int] = []
+    for index in range(max(0, int(file_count))):
+        byte_index = index // 8
+        bit_index = index % 8
+        if byte_index >= len(raw):
+            break
+        mask = (1 << (7 - bit_index)) if msb_first else (1 << bit_index)
+        if raw[byte_index] & mask:
+            unwanted.append(index)
+    return unwanted
+
+
+def build_seedr_unwanted(file_count: int, unwanted_indexes: list[int], msb_first: bool = False) -> str:
+    size = max(0, (int(file_count) + 7) // 8)
+    raw = bytearray(size)
+    for index in unwanted_indexes:
+        if index < 0 or index >= file_count:
+            continue
+        byte_index = index // 8
+        bit_index = index % 8
+        mask = (1 << (7 - bit_index)) if msb_first else (1 << bit_index)
+        raw[byte_index] |= mask
+    return base64.b64encode(bytes(raw)).decode("ascii")
+
+
 @app.post("/api/seedr/tasks/add-selected")
 async def seedr_add_selected(body: dict[str, Any]):
-    """Add a magnet to Seedr, then mark every unselected file as unwanted.
-
-    This is the experimental selective-download path for validating whether
-    a Free Seedr account accepts a multi-file torrent and honors its unwanted
-    bitmap before fetching unwanted payload.
-    """
+    """Add a magnet to Seedr and apply/verify its unwanted-file bitmap."""
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
 
@@ -2452,10 +2513,12 @@ async def seedr_add_selected(body: dict[str, Any]):
         if not isinstance(item, dict):
             raise HTTPException(400, "Invalid torrent file metadata")
         try:
-            idx = int(item.get("index"))
+            metadata_indexes.append(int(item.get("index")))
         except (TypeError, ValueError):
             raise HTTPException(400, "Invalid torrent file index")
-        metadata_indexes.append(idx)
+
+    if len(set(metadata_indexes)) != len(metadata_indexes):
+        raise HTTPException(400, "Duplicate torrent file indexes are not allowed")
 
     selected_set: set[int] = set()
     for value in selected_indexes:
@@ -2468,14 +2531,20 @@ async def seedr_add_selected(body: dict[str, Any]):
     if unknown:
         raise HTTPException(400, f"Selected file index not present in metadata: {sorted(unknown)}")
 
-    # Seedr's unwanted representation is a base64-encoded bitmap where bit N
-    # corresponds to the Nth torrent file: 1 = unwanted, 0 = wanted.
-    max_index = max(metadata_indexes)
-    bitmap = bytearray((max_index // 8) + 1)
-    for idx in metadata_indexes:
-        if idx not in selected_set:
-            bitmap[idx // 8] |= 1 << (idx % 8)
-    unwanted_b64 = base64.b64encode(bytes(bitmap)).decode("ascii")
+    metadata_by_index = {
+        int(item["index"]): item
+        for item in raw_files
+    }
+    ordered_indexes = sorted(metadata_indexes)
+    selected_size = sum(
+        int(metadata_by_index[index].get("size") or 0)
+        for index in selected_set
+    )
+    total_size = sum(
+        int(item.get("size") or 0)
+        for item in raw_files
+    )
+    unwanted_indexes = [index for index in ordered_indexes if index not in selected_set]
 
     existing = await find_task_by_hash(h)
     created = False
@@ -2489,27 +2558,57 @@ async def seedr_add_selected(body: dict[str, Any]):
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
 
-    write_result: Any = None
-    write_error: str | None = None
+    paused = False
+    pause_error: str | None = None
+    if created:
+        try:
+            await seedr_request(f"/tasks/{quote(tid)}/pause", "POST")
+            paused = True
+        except HTTPException as exc:
+            # Pause is documented but may not be enabled for every account.
+            # The selection write is still attempted when pause is unavailable.
+            pause_error = str(exc.detail)
 
-    try:
-        write_result = seedr_data(
+    verification: list[int] = []
+    write_errors: list[str] = []
+    accepted_bitmap: str | None = None
+    accepted_bit_order: str | None = None
+
+    unwanted_set = set(unwanted_indexes)
+    for msb_first in (False, True):
+        unwanted_b64 = build_seedr_unwanted(len(ordered_indexes), unwanted_indexes, msb_first)
+        try:
             await seedr_request(
                 f"/tasks/{quote(tid)}/unwanted",
                 "POST",
                 {"unwanted": unwanted_b64},
                 form=True,
             )
-        )
-    except HTTPException as exc:
-        write_error = str(exc.detail)
-        if created:
-            logger.warning("Selective Seedr write failed for new task %s: %s", tid, write_error)
+            verify_payload = await seedr_request(f"/tasks/{quote(tid)}/unwanted")
+            actual = decode_seedr_unwanted(verify_payload, len(ordered_indexes), msb_first)
+            # Map logical metadata indexes to the ordered file positions before comparison.
+            expected_positions = [
+                position
+                for position, metadata_index in enumerate(ordered_indexes)
+                if metadata_index in unwanted_set
+            ]
+            if actual == expected_positions:
+                accepted_bitmap = unwanted_b64
+                verification = actual
+                accepted_bit_order = "msb" if msb_first else "lsb"
+                break
+            write_errors.append(
+                f"{'MSB' if msb_first else 'LSB'} bitmap verification mismatch: got {actual}, expected {expected_positions}"
+            )
+        except HTTPException as exc:
+            write_errors.append(f"{'MSB' if msb_first else 'LSB'} bitmap write failed: {exc.detail}")
 
-    try:
-        verify = seedr_data(await seedr_request(f"/tasks/{quote(tid)}/unwanted"))
-    except HTTPException:
-        verify = None
+    resume_error: str | None = None
+    if paused:
+        try:
+            await seedr_request(f"/tasks/{quote(tid)}/resume", "POST")
+        except HTTPException as exc:
+            resume_error = str(exc.detail)
 
     torrent_name = str(body.get("torrentName") or "").strip() or seedr_task_name(task) or f"Torrent {tid}"
     task_folder_id = seedr_task_folder_id(task)
@@ -2523,13 +2622,16 @@ async def seedr_add_selected(body: dict[str, Any]):
         "torrentName": torrent_name,
         "folderId": task_folder_id or None,
         "selectedIndexes": sorted(selected_set),
-        "selectedSize": sum(int(item.get("size") or 0) for item in raw_files if int(item.get("index")) in selected_set),
-        "totalSize": sum(int(item.get("size") or 0) for item in raw_files),
-        "unwanted": unwanted_b64,
-        "writeAccepted": write_error is None,
-        "writeResult": write_result,
-        "writeError": write_error,
-        "verifiedUnwanted": verify,
+        "selectedSize": selected_size,
+        "totalSize": total_size,
+        "unwanted": accepted_bitmap,
+        "writeAccepted": accepted_bitmap is not None,
+        "acceptedBitOrder": accepted_bit_order,
+        "writeError": None if accepted_bitmap is not None else ("; ".join(write_errors) or "Seedr did not preserve the requested file selection"),
+        "verifiedUnwanted": verification,
+        "pauseApplied": paused,
+        "pauseError": pause_error,
+        "resumeError": resume_error,
     }
 
 
@@ -2694,13 +2796,10 @@ async def seedr_task(tid: str):
     folderNameValue = canonical_name or (await folder_name(folder_id) if folder_id else "")
     for f in files:
         f["folderPath"] = "/Torrent Studio" + ("/" + folderNameValue if folderNameValue else "")
+        # Do not resolve direct Seedr URLs while polling/finalizing a task.
+        # A fresh URL is generated only by an explicit download/copy/stream action.
         f["url"] = None
-        if f["id"]:
-            try:
-                f["url"] = (await download_url(f["id"]))["url"]
-            except HTTPException:
-                pass
-    return {"taskId": tid, "name": str(task.get("title") or task.get("name") or ""), "folderName": folderNameValue, "folderId": folder_id, "status": "completed" if complete else "downloading", "progress": progress, "task": task, "files": files, "downloadUrl": next((f["url"] for f in files if f.get("url")), None)}
+    return {"taskId": tid, "name": str(task.get("title") or task.get("name") or ""), "folderName": folderNameValue, "folderId": folder_id, "status": "completed" if complete else "downloading", "progress": progress, "task": task, "files": files, "downloadUrl": None}
 
 async def seedr_folder_payload(folder_id: str) -> dict[str, Any]:
     """Fetch one Seedr folder level, with a short-lived in-process cache."""
@@ -3075,9 +3174,17 @@ async def seedr_files():
 
     return {"configured": True, "files": unique}
 
+@app.get("/api/seedr/files/{file_id}/download/url")
+async def seedr_file_download_url(file_id: str):
+    # Resolve a fresh direct Seedr URL only when the user explicitly requests it.
+    return await download_url(file_id)
+
 @app.get("/api/seedr/files/{file_id}/download")
 async def seedr_file_download(file_id: str):
-    return await download_url(file_id)
+    # Redirect the browser to Seedr's temporary direct URL so large downloads
+    # do not flow through the Render Free instance.
+    result = await download_url(file_id)
+    return RedirectResponse(result["url"], status_code=307)
 
 
 @app.get("/api/seedr/files/{file_id}/download/direct")
@@ -3138,10 +3245,18 @@ async def seedr_folder_download_url(folder_id: str) -> str:
     raise HTTPException(502, "Seedr did not return a folder download URL")
 
 
-@app.get("/api/seedr/folders/{folder_id}/download")
-async def seedr_folder_download(folder_id: str):
+@app.get("/api/seedr/folders/{folder_id}/download/url")
+async def seedr_folder_download_url_api(folder_id: str):
+    # Resolve the temporary direct Seedr folder URL only on an explicit click.
     url = await seedr_folder_download_url(folder_id)
     return {"url": url}
+
+@app.get("/api/seedr/folders/{folder_id}/download")
+async def seedr_folder_download(folder_id: str):
+    # Redirect the browser to Seedr's temporary direct folder URL rather than
+    # streaming the archive through Render.
+    url = await seedr_folder_download_url(folder_id)
+    return RedirectResponse(url, status_code=307)
 
 
 @app.get("/api/seedr/folders/{folder_id}/download/direct")
@@ -3219,10 +3334,10 @@ async def seedr_v2_request(path: str) -> Any:
     except Exception:
         data = raw
     if response.status_code >= 400:
-        detail = raw
-        if isinstance(data, dict):
-            detail = data.get("error_description") or data.get("message") or data.get("error") or raw
-        raise HTTPException(response.status_code, str(detail or "Seedr V2 request failed"))
+        raise HTTPException(
+            response.status_code,
+            seedr_error_message(response.status_code, data, raw),
+        )
     return data
 
 async def seedr_v2_video_url(file_id: str) -> str:
@@ -4195,7 +4310,7 @@ async def storage_stats():
     metadata = await get_seedr_metadata_tree()
     root = metadata.get("root") if isinstance(metadata, dict) else {}
     used = int(q.get("usedSpace") or 0)
-    total = int(q.get("maxSpace") or SEEDR_MAX_SIZE_BYTES)
+    total = int(q.get("maxSpace") or 0)
     pct = (used / total * 100) if total else 0
     return {
         "totalBytes": total,
