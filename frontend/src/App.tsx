@@ -192,6 +192,11 @@ export default function App() {
   const [seedrDeleteNotice, setSeedrDeleteNotice] = useState<string | null>(null);
   const [copiedSeedrFileId, setCopiedSeedrFileId] = useState<string | null>(null);
   const [seedrAddBlockedNotice, setSeedrAddBlockedNotice] = useState<string | null>(null);
+  const [seedrSelectionContext, setSeedrSelectionContext] = useState<{
+    remainingSpace: number;
+    torrentSize: number;
+    torrentName: string;
+  } | null>(null);
   const [isCancellingSeedr, setIsCancellingSeedr] = useState(false);
   const [activeSeedrFolderOpen, setActiveSeedrFolderOpen] = useState(false);
   const [selectedSeedrFolderId, setSelectedSeedrFolderId] = useState<string | null>(() => {
@@ -744,37 +749,32 @@ export default function App() {
       return;
     }
 
-    // Search results already include the full torrent size. Reuse the
-    // storage stats loaded during app startup instead of making another
-    // Seedr quota request for every Add click.
+    // Always check Seedr's live quota before deciding whether a search
+    // result can be added directly. The general storage stats can be stale
+    // after another Seedr file is added/deleted.
     if (seedrSource && Number(size) > 0) {
-      const remainingSpace = Number(storageStats?.freeBytes || 0);
+      try {
+        const quota = await api.getSeedrQuota();
+        const remainingSpace = Number(quota.remainingSpace || 0);
+        const torrentSize = Number(size) || 0;
 
-      if (storageStats && remainingSpace > 0 && Number(size) < remainingSpace) {
-        await handleAddMagnet(
-          seedrSource,
-          'Downloads',
-          undefined,
-          undefined,
-          undefined,
-          'seedr',
-          undefined,
-          undefined,
-          title
-        );
-        return;
+        if (quota.configured && torrentSize > remainingSpace) {
+          setSeedrSelectionContext({
+            remainingSpace,
+            torrentSize,
+            torrentName: title,
+          });
+          setSeedrAddBlockedNotice(
+            `This torrent is ${formatBytes(torrentSize)} but Seedr has ${formatQuotaBytes(remainingSpace)} remaining. Review the files before continuing.`
+          );
+          openAddMagnet(seedrSource);
+          return;
+        }
+      } catch {
+        // Let the backend perform the authoritative quota check when the
+        // live quota endpoint is temporarily unavailable.
       }
 
-      if (storageStats && remainingSpace > 0 && Number(size) >= remainingSpace) {
-        setSeedrAddBlockedNotice(
-          'This torrent is larger than the remaining Seedr space. Select the files you want to send to Seedr.'
-        );
-        openAddMagnet(seedrSource);
-        return;
-      }
-
-      // If storage stats are unavailable, let the backend perform the
-      // authoritative Seedr add and report a quota error when necessary.
       await handleAddMagnet(
         seedrSource,
         'Downloads',
@@ -2435,6 +2435,7 @@ export default function App() {
         onClose={() => {
           setIsAddMagnetOpen(false);
           setInitialMagnet('');
+          setSeedrSelectionContext(null);
         }}
         onOpen={() => {
           openAddMagnet(initialMagnet);
@@ -2442,6 +2443,7 @@ export default function App() {
         onAdd={handleAddMagnet}
         defaultFolder={currentFolder === '/' ? 'Downloads' : currentFolder.replace('/', '')}
         initialMagnet={initialMagnet}
+        selectionReason={seedrSelectionContext}
       />
 
       <FilePrioModal
