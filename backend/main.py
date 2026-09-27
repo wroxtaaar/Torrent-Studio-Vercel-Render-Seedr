@@ -1099,6 +1099,102 @@ async def seedr_file_subtitle(
         headers={"Cache-Control": "private, max-age=300"},
     )
 
+
+OPEN_SUBTITLES_API_KEY = os.getenv("OPENSUBTITLES_API_KEY", "").strip()
+OPEN_SUBTITLES_API_URL = "https://api.opensubtitles.com/api/v1"
+OPEN_SUBTITLES_USER_AGENT = os.getenv("OPENSUBTITLES_USER_AGENT", "Torrent-Studio v1.0").strip() or "Torrent-Studio v1.0"
+_downloaded_subtitles: dict[str, tuple[float, str, str]] = {}
+
+
+async def _opensubtitles_request(method: str, path: str, *, params: dict[str, str] | None = None, json_body: dict[str, Any] | None = None) -> Any:
+    if not OPEN_SUBTITLES_API_KEY:
+        raise HTTPException(503, "OpenSubtitles is not configured. Add OPENSUBTITLES_API_KEY to Render.")
+    headers = {"Api-Key": OPEN_SUBTITLES_API_KEY, "User-Agent": OPEN_SUBTITLES_USER_AGENT, "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
+        response = await client.request(method, OPEN_SUBTITLES_API_URL + path, params=params, json=json_body, headers=headers)
+    if response.status_code >= 400:
+        detail = response.text[:500] or f"OpenSubtitles HTTP {response.status_code}"
+        try:
+            body = response.json()
+            detail = str(body.get("message") or body.get("error") or detail)
+        except Exception:
+            pass
+        raise HTTPException(response.status_code, detail)
+    try:
+        return response.json()
+    except Exception as exc:
+        raise HTTPException(502, "OpenSubtitles returned an invalid response") from exc
+
+
+@app.get("/api/subtitles/search")
+async def search_subtitles(query: str = Query(..., min_length=1, max_length=300), language: str = Query("en", max_length=10)):
+    payload = await _opensubtitles_request(
+        "GET", "/subtitles",
+        params={"query": query.strip(), "languages": language.strip().lower() or "en", "order_by": "download_count", "order_direction": "desc"},
+    )
+    results = []
+    for item in payload.get("data", []) if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        attrs = item.get("attributes") or {}
+        files = attrs.get("files") or []
+        first_file = files[0] if isinstance(files, list) and files else {}
+        if not isinstance(first_file, dict):
+            first_file = {}
+        file_id = str(first_file.get("file_id") or "").strip()
+        if not file_id:
+            continue
+        results.append({
+            "fileId": file_id,
+            "language": str(attrs.get("language") or language or "en"),
+            "release": str(attrs.get("release") or ((attrs.get("feature_details") or {}).get("movie_name")) or "Subtitle"),
+            "downloads": int(attrs.get("download_count") or 0),
+            "format": str(attrs.get("format") or first_file.get("format") or "srt"),
+            "hearingImpaired": bool(attrs.get("hearing_impaired")),
+        })
+        if len(results) >= 20:
+            break
+    return {"results": results}
+
+
+@app.post("/api/subtitles/download")
+async def download_subtitle(payload: dict[str, Any]):
+    file_id = str(payload.get("fileId") or "").strip()
+    if not file_id:
+        raise HTTPException(400, "Subtitle file id is required")
+    result = await _opensubtitles_request("POST", "/download", json_body={"file_id": int(file_id) if file_id.isdigit() else file_id})
+    link = str(result.get("link") or result.get("url") or "").strip()
+    if not link:
+        raise HTTPException(502, "OpenSubtitles did not return a subtitle download link")
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        response = await client.get(link, headers={"Api-Key": OPEN_SUBTITLES_API_KEY, "User-Agent": OPEN_SUBTITLES_USER_AGENT})
+    if response.status_code >= 400:
+        raise HTTPException(response.status_code, "Could not retrieve the downloaded subtitle")
+    raw = response.content
+    filename = str(result.get("file_name") or result.get("filename") or "subtitle.srt")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("cp1252", errors="replace")
+    if not text.lstrip().startswith("WEBVTT"):
+        text = _srt_to_webvtt(text)
+    token = base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("=")
+    _downloaded_subtitles[token] = (time.time() + 900, text, filename)
+    return {"url": "/api/subtitles/content/" + token, "language": str(result.get("language") or "en"), "title": filename.rsplit("/", 1)[-1], "format": "vtt"}
+
+
+@app.get("/api/subtitles/content/{token}")
+async def subtitle_content(token: str):
+    item = _downloaded_subtitles.get(token)
+    if not item:
+        raise HTTPException(404, "Subtitle expired")
+    expires_at, text, _filename = item
+    if expires_at <= time.time():
+        _downloaded_subtitles.pop(token, None)
+        raise HTTPException(404, "Subtitle expired")
+    return Response(content=text, media_type="text/vtt; charset=utf-8", headers={"Cache-Control": "private, max-age=300"})
+
+
 def _search_tokens(value: str) -> list[str]:
     return [token for token in re.findall(r"[a-z0-9]+", value.lower()) if token]
 
