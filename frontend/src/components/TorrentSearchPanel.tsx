@@ -367,7 +367,10 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
                     <button
                       type="button"
                       disabled={!result.sourceUrl}
-                      onClick={() => result.sourceUrl && onAdd(result.sourceUrl, Number(result.size) || 0, result.title, result.infoHash)}
+                      onClick={() => {
+                        const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
+                        if (source) onAdd(source, Number(result.size) || 0, result.title, result.infoHash);
+                      }}
                       className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center gap-1.5 transition"
                     >
                       <Download className="w-4 h-4" />
