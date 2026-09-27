@@ -19,7 +19,7 @@ SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
 SEEDR_LIBRARY_FOLDER_ID = os.getenv("SEEDR_LIBRARY_FOLDER_ID", "").strip()
 SEEDR_MAX_SIZE_GB = float(os.getenv("SEEDR_MAX_SIZE_GB", "5"))
 SEEDR_MAX_SIZE_BYTES = int(SEEDR_MAX_SIZE_GB * 1024**3)
-TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-mcp-o496.onrender.com").rstrip("/")
+TORRENT_SEARCH_API_URL = os.getenv("TORRENT_SEARCH_API_URL", "https://torrent-search-api-ujfa.onrender.com").rstrip("/")
 app = FastAPI(title=APP_NAME)
 app.add_middleware(
     CORSMiddleware,
@@ -348,7 +348,7 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "seedrConfigured": bool(SEEDR_TOKEN), "indexer": INDEXER_BASE, "indexers": INDEXER_BASES}
+    return {"status": "ok", "seedrConfigured": bool(SEEDR_TOKEN), "torrentSearchApi": TORRENT_SEARCH_API_URL}
 
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=20)):
@@ -425,8 +425,23 @@ async def seedr_add(body: MagnetRequest):
     h = info_hash(magnet)
     if not h:
         raise HTTPException(400, "A valid BTIH magnet link is required")
-    existing = await find_task_by_hash(h)
-    task = existing or await add_task(magnet, int(folder))
+
+    # Fast path: add directly to Seedr. The previous implementation scanned
+    # all existing tasks and inspected folders before every add, which added
+    # several network round trips to the Add button path. Only do the lookup
+    # when Seedr rejects the add as a possible duplicate.
+    try:
+        task = await add_task(magnet, int(folder))
+    except HTTPException as exc:
+        if exc.status_code == 400:
+            existing = await find_task_by_hash(h)
+            if existing:
+                task = existing
+            else:
+                raise
+        else:
+            raise
+
     tid = task_id(task)
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
