@@ -2450,14 +2450,33 @@ def _seedr_media_url(file_id: str, media_type: str) -> str:
         raise HTTPException(400, "Unsupported Seedr media type")
     return SEEDR_MEDIA_BASE.rstrip("/") + endpoint + "?access_token=" + quote(SEEDR_TOKEN, safe="")
 
+def seedr_v2_bearer_token() -> str:
+    """Accept a raw Seedr PAT or MediaFusion-style base64 JSON token."""
+    raw = SEEDR_TOKEN.strip()
+    if not raw:
+        return ""
+    try:
+        decoded = base64.b64decode(raw, validate=True).decode("utf-8")
+        payload = json.loads(decoded)
+        token = str(payload.get("access_token") or "").strip() if isinstance(payload, dict) else ""
+        if token:
+            return token
+    except Exception:
+        pass
+    return raw
+
+
 async def seedr_v2_request(path: str) -> Any:
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
+    bearer = seedr_v2_bearer_token()
+    if not bearer:
+        raise HTTPException(503, "Seedr access token is empty")
     url = SEEDR_V2_BASE.rstrip("/") + "/" + str(path).lstrip("/")
     async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
         response = await client.get(
             url,
-            headers={"Authorization": f"Bearer {SEEDR_TOKEN}", "Accept": "application/json"},
+            headers={"Authorization": f"Bearer {bearer}", "Accept": "application/json"},
         )
     raw = response.text
     try:
