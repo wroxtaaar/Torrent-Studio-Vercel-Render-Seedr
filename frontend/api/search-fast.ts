@@ -74,7 +74,7 @@ function parseIntSafe(value: unknown): number {
   return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
 }
 
-export default async function handler(req: Request): Promise<Response> {
+export async function GET(req: Request): Promise<Response> {
   if (req.method !== 'GET') {
     return new Response(JSON.stringify({ error: 'Method not allowed' }), {
       status: 405,
