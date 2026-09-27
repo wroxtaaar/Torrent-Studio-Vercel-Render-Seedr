@@ -1640,9 +1640,37 @@ async def build_seedr_metadata_tree(
     async def load_child(entry: tuple[str, str, dict[str, Any]]) -> dict[str, Any]:
         child_id, child_name, raw = entry
         child_payload = await seedr_folder_payload(child_id)
+
+        # Older Seedr folders can be exposed with their raw 40-character
+        # identifier as the visible name. For a single-file torrent we can
+        # recover the human title from the actual file name and normalize the
+        # folder once, so existing downloads also get fixed on refresh.
+        effective_child_name = child_name
+        child_files = arr(child_payload, ("files", "items"))
+        if (
+            re.fullmatch(r"[0-9a-fA-F]{40}", effective_child_name)
+            and len(child_files) == 1
+            and isinstance(child_files[0], dict)
+        ):
+            raw_file_name = str(
+                child_files[0].get("name")
+                or child_files[0].get("title")
+                or ""
+            ).strip()
+            inferred_name = Path(raw_file_name.replace("\\", "/")).name
+            inferred_name = Path(inferred_name).stem.strip()
+            if inferred_name:
+                try:
+                    renamed = await rename_seedr_folder(child_id, inferred_name)
+                except Exception:
+                    renamed = False
+                if renamed:
+                    _seedr_torrent_names[child_id] = inferred_name
+                    effective_child_name = inferred_name
+
         child_summary = direct_folder_summary(
             child_id,
-            path.rstrip("/") + "/" + child_name,
+            path.rstrip("/") + "/" + effective_child_name,
             child_payload,
         )
 
@@ -1671,6 +1699,7 @@ async def build_seedr_metadata_tree(
         child_summary["torrentName"] = (
             _seedr_torrent_names.get(child_id)
             or folder_name_overrides.get(child_id)
+            or (effective_child_name if re.fullmatch(r"[0-9a-fA-F]{40}", child_name) is None else "")
             or ""
         )
         child_summary["folderCount"] = len(
