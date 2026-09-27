@@ -13,7 +13,7 @@ import { api, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
 
 interface TorrentSearchPanelProps {
-  onAdd: (source: string, size: number, title: string, infoHash?: string) => void;
+  onAdd: (source: string, size: number, title: string, infoHash?: string) => void | Promise<void>;
 }
 
 function formatPublished(value?: string) {
@@ -33,6 +33,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
   const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
   const [minSeeders, setMinSeeders] = useState(1);
   const [showRecentSearches, setShowRecentSearches] = useState(false);
+  const [addingTorrentKey, setAddingTorrentKey] = useState<string | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('seedflow_recent_searches');
@@ -364,18 +365,36 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
                       </a>
                     )}
 
-                    <button
-                      type="button"
-                      disabled={!result.magnetUrl && !result.downloadUrl && !result.sourceUrl}
-                      onClick={() => {
-                        const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
-                        if (source) onAdd(source, Number(result.size) || 0, result.title, result.infoHash);
-                      }}
-                      className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center gap-1.5 transition"
-                    >
-                      <Download className="w-4 h-4" />
-                      Add
-                    </button>
+                    {(() => {
+                      const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
+                      const torrentKey = result.infoHash || source || result.title;
+                      const isAdding = addingTorrentKey === torrentKey;
+
+                      return (
+                        <button
+                          type="button"
+                          disabled={!source || isAdding}
+                          onClick={async () => {
+                            if (!source || isAdding) return;
+
+                            setAddingTorrentKey(torrentKey);
+                            try {
+                              await onAdd(source, Number(result.size) || 0, result.title, result.infoHash);
+                            } finally {
+                              setAddingTorrentKey(current => current === torrentKey ? null : current);
+                            }
+                          }}
+                          className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center gap-1.5 transition"
+                        >
+                          {isAdding ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Download className="w-4 h-4" />
+                          )}
+                          {isAdding ? 'Adding…' : 'Add'}
+                        </button>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
