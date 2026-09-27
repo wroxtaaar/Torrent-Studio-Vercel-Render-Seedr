@@ -1106,12 +1106,103 @@ export default function App() {
         ).trim();
 
         const refreshCompletedLibrary = async () => {
-          // Seedr can report the task as complete slightly before the folder
-          // becomes visible in /fs/folder/<library>/contents. Keep refreshing
-          // until the folder is actually exposed instead of requiring the user
-          // to press "Refresh Seedr" manually.
+          // Seedr can report a task as complete before the new folder appears
+          // in the library tree. Add the completed folder to the UI immediately
+          // from the completed task/folder response, then keep reconciling with
+          // the real Seedr library until it becomes visible there too.
+          let eagerFiles: Array<{
+            id: string;
+            streamId?: string;
+            name: string;
+            size: number;
+            folderId: string;
+            folderPath: string;
+          }> = [];
+
+          let eagerFolderId = completedFolderId;
+
+          if (completedFolderId) {
+            try {
+              const contents = await api.getSeedrFolderContents(completedFolderId);
+              eagerFiles = contents.files.map(file => ({
+                id: file.id,
+                streamId: file.streamId,
+                name: file.name,
+                size: Number(file.size) || 0,
+                folderId: file.folderId || completedFolderId,
+                folderPath: '/Torrent Studio/' + (completedTorrentName || 'Downloads'),
+              }));
+
+              if (eagerFiles.length > 0) {
+                setSeedrFolderContentsCache(prev => ({
+                  ...prev,
+                  [completedFolderId]: eagerFiles,
+                }));
+                if (selectedSeedrFolderId === completedFolderId) {
+                  setSeedrFiles(eagerFiles);
+                  setSeedrFolderContentsLoading(false);
+                }
+              }
+            } catch (error) {
+              console.warn('Completed Seedr folder is not visible yet:', error);
+            }
+
+            // Show the completed folder immediately even when the Seedr library
+            // index is still lagging behind the task completion.
+            const eagerSize = eagerFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
+            const eagerName = completedTorrentName || 'Completed Seedr download';
+            setSeedrLibraryFolders(prev => {
+              const exists = prev.some(folder => String(folder.folderId || folder.id) === completedFolderId);
+              if (exists) return prev;
+
+              return [
+                {
+                  id: completedFolderId,
+                  folderId: completedFolderId,
+                  name: eagerName,
+                  path: '/Torrent Studio/' + eagerName,
+                  filesCount: eagerFiles.length || 1,
+                  totalSize: eagerSize || Number((result as any)?.size || 0),
+                  folderCount: 0,
+                  active: false,
+                  progress: 100,
+                },
+                ...prev,
+              ];
+            });
+          }
+
           for (let attempt = 0; attempt < 12; attempt += 1) {
             const refreshed = await loadSeedrLibrary();
+
+            // loadSeedrLibrary replaces the folder array with the latest API
+            // response. Preserve our eager completed folder if Seedr's index is
+            // still catching up.
+            if (eagerFolderId) {
+              const folderIdForMerge = eagerFolderId;
+              const mergeName = completedTorrentName || 'Completed Seedr download';
+              setSeedrLibraryFolders(prev => {
+                const exists = prev.some(folder => String(folder.folderId || folder.id) === folderIdForMerge);
+                if (exists) return prev;
+
+                const mergeSize = eagerFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
+                return [
+                  {
+                    id: folderIdForMerge,
+                    folderId: folderIdForMerge,
+                    name: mergeName,
+                    path: '/Torrent Studio/' + mergeName,
+                    filesCount: eagerFiles.length || 1,
+                    totalSize: mergeSize,
+                    folderCount: 0,
+                    active: false,
+                    progress: 100,
+                  },
+                  ...prev,
+                ];
+              });
+            }
+
             const completedFolder = refreshed?.folders?.find(folder => {
               const folderId = String(folder.folderId || folder.id || '').trim();
               const folderName = String(folder.name || '').trim();
@@ -1128,9 +1219,7 @@ export default function App() {
                 completedFolder.folderId || completedFolder.id || completedFolderId || ''
               ).trim();
 
-              // Fetch the newly completed folder immediately so its file rows,
-              // stream IDs, sizes, and download actions are available without
-              // waiting for the rest of the library prefetch.
+              // Once the real library index catches up, refresh its file rows too.
               if (resolvedFolderId) {
                 try {
                   const contents = await api.getSeedrFolderContents(resolvedFolderId);
