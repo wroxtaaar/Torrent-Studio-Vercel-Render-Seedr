@@ -99,6 +99,41 @@ export const api = {
     return data;
   },
 
+  async searchSubtitles(query: string, language = 'en'): Promise<Array<{
+    fileId: string;
+    language: string;
+    release: string;
+    downloads: number;
+    format: string;
+    hearingImpaired: boolean;
+  }>> {
+    const params = new URLSearchParams({ query, languages: language });
+    const res = await apiFetch('/api/subtitles/search?' + params.toString());
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) throw new Error(data?.error || body || 'Subtitle search failed');
+    return Array.isArray(data?.results) ? data.results : [];
+  },
+
+  async downloadSubtitle(fileId: string): Promise<{
+    url: string;
+    language: string;
+    title: string;
+    format: string;
+  }> {
+    const res = await apiFetch('/api/subtitles/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileId })
+    });
+    const body = await res.text();
+    let data: any = null;
+    try { data = body ? JSON.parse(body) : null; } catch {}
+    if (!res.ok) throw new Error(data?.error || body || 'Subtitle download failed');
+    return data;
+  },
+
   async getTorrents(filter?: string): Promise<TorrentItem[]> {
     const url = filter ? `/api/v2/torrents/info?filter=${filter}` : '/api/v2/torrents/info';
     const res = await apiFetch(url);
