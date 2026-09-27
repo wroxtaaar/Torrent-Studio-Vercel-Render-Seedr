@@ -7,6 +7,7 @@ import {
   Image as ImageIcon,
   File,
   Play,
+  Loader2,
   Download,
   Copy,
   Check,
@@ -27,6 +28,7 @@ interface FileCardProps {
   onMove: (file: StorageFile) => void;
   canEdit?: boolean;
   canDelete?: boolean;
+  streamLoading?: boolean;
 }
 
 export const FileCard: React.FC<FileCardProps> = ({
@@ -36,7 +38,8 @@ export const FileCard: React.FC<FileCardProps> = ({
   onRename,
   onMove,
   canEdit = true,
-  canDelete = true
+  canDelete = true,
+  streamLoading = false
 }) => {
   const [copied, setCopied] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
@@ -104,11 +107,12 @@ export const FileCard: React.FC<FileCardProps> = ({
         {file.isStreamable && (
           <button
             onClick={() => onPlay(file)}
-            className="px-2.5 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold flex items-center gap-1.5 transition tap-target"
-            title="Stream in Browser"
+            disabled={streamLoading}
+            className="px-2.5 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold flex items-center gap-1.5 transition tap-target disabled:opacity-60 disabled:cursor-wait"
+            title={streamLoading ? "Preparing stream…" : "Stream in Browser"}
           >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span className="hidden sm:inline">Stream</span>
+            {streamLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+            <span className="hidden sm:inline">{streamLoading ? 'Preparing…' : 'Stream'}</span>
           </button>
         )}
 
