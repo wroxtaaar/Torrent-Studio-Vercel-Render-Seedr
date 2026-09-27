@@ -559,43 +559,49 @@ export default function App() {
       return;
     }
 
-    // Search results already provide the complete torrent size. There is no
-    // need to resolve qBittorrent metadata again just to decide whether the
-    // whole search result fits in the remaining Seedr quota.
+    // Search results already include the full torrent size. Reuse the
+    // storage stats loaded during app startup instead of making another
+    // Seedr quota request for every Add click.
     if (seedrSource && Number(size) > 0) {
-      try {
-        const quota = await api.getSeedrQuota();
-        if (
-          quota.configured &&
-          Number(size) < quota.remainingSpace
-        ) {
-          await handleAddMagnet(
-            seedrSource,
-            'Downloads',
-            undefined,
-            undefined,
-            undefined,
-            'seedr',
-            undefined,
-            undefined,
-            title
-          );
-          return;
-        }
+      const remainingSpace = Number(storageStats?.freeBytes || 0);
 
+      if (storageStats && remainingSpace > 0 && Number(size) < remainingSpace) {
+        await handleAddMagnet(
+          seedrSource,
+          'Downloads',
+          undefined,
+          undefined,
+          undefined,
+          'seedr',
+          undefined,
+          undefined,
+          title
+        );
+        return;
+      }
+
+      if (storageStats && remainingSpace > 0 && Number(size) >= remainingSpace) {
         setSeedrAddBlockedNotice(
-          'This torrent is larger than the remaining Seedr space. Selective file transfer will be wired to the Seedr backend next.'
+          'This torrent is larger than the remaining Seedr space. Select the files you want to send to Seedr.'
         );
         openAddMagnet(seedrSource);
         return;
-      } catch (error: any) {
-        setSeedrAddBlockedNotice(
-          error?.message || 'Could not start the search result download.'
-        );
-        setActiveTab('transfers');
-        window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
-        return;
       }
+
+      // If storage stats are unavailable, let the backend perform the
+      // authoritative Seedr add and report a quota error when necessary.
+      await handleAddMagnet(
+        seedrSource,
+        'Downloads',
+        undefined,
+        undefined,
+        undefined,
+        'seedr',
+        undefined,
+        undefined,
+        title
+      );
+      return;
     }
 
     // If the search result has no usable magnet/hash, keep the existing
@@ -689,22 +695,20 @@ export default function App() {
       } else {
         setSeedrNotice(null);
       }
-      // Adding the torrent is the important operation. Refreshing the
-      // transfers/storage views is best-effort so a temporary qBittorrent
-      // polling error does not make a successful add look like a failure.
-      try {
-        const updated = await api.getTorrents();
-        setTorrents(updated);
-      } catch (refreshError) {
-        console.warn('Torrent added, but transfers could not be refreshed yet:', refreshError);
-      }
+      // The add response is the important operation. Refresh secondary UI
+      // state in the background so the Add button does not stay blocked on
+      // extra qBittorrent/Seedr requests.
+      void api.getTorrents()
+        .then(setTorrents)
+        .catch((refreshError) =>
+          console.warn('Torrent added, but transfers could not be refreshed yet:', refreshError)
+        );
 
-      try {
-        const stats = await api.getStorageStats();
-        setStorageStats(stats);
-      } catch (refreshError) {
-        console.warn('Torrent added, but storage stats could not be refreshed yet:', refreshError);
-      }
+      void api.getStorageStats()
+        .then(setStorageStats)
+        .catch((refreshError) =>
+          console.warn('Torrent added, but storage stats could not be refreshed yet:', refreshError)
+        );
 
       setActiveTab(result.backend === 'seedr' ? 'files' : 'transfers');
     } catch (error: any) {
