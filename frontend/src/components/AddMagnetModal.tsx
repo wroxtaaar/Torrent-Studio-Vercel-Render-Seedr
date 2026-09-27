@@ -43,6 +43,7 @@ interface AddMagnetModalProps {
   defaultFolder?: string;
   initialMagnet?: string;
   initialSourceUrl?: string;
+  initialDescriptorUrl?: string;
   onBackgroundChange?: (state: { active: boolean; title: string; message: string; ready?: boolean; error?: string }) => void;
   selectionReason?: {
     remainingSpace: number;
@@ -69,6 +70,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   defaultFolder = 'Downloads',
   initialMagnet = '',
   initialSourceUrl = '',
+  initialDescriptorUrl = '',
   onBackgroundChange,
   selectionReason = null
 }) => {
@@ -260,7 +262,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
           : 'Resolving torrent metadata without starting Seedr...'
       );
 
-      const data = await api.inspectMagnet(source, category, initialSourceUrl);
+      const data = await api.inspectMagnet(source, category, initialSourceUrl, initialDescriptorUrl);
 
       if (data && Array.isArray(data.files) && data.files.length > 0) {
         const hash = String(data.hash || '').trim().toLowerCase();
