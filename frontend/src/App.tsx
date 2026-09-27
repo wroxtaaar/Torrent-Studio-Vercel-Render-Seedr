@@ -1142,8 +1142,9 @@ export default function App() {
           status: 'waiting',
           progress: 0,
           downloadUrl: null,
-          // Seedr receives the complete torrent. When the full torrent does not
-          // fit, the selector routes the selected-file download to qBittorrent.
+          // Only the files selected in the manifest are represented in the
+          // pending UI. The backend applies the Seedr unwanted-file bitmap
+          // immediately after creating the task; no pause/resume is used.
           files: (manifest || [])
             .map((file, index) => ({ file, index }))
             .filter(({ file }) => Number(file.priority || 0) > 0)
@@ -1161,8 +1162,8 @@ export default function App() {
             const state = response?.state ?? response?.task?.state ?? response?.status ?? response?.task?.status;
             return state ? `Seedr replied: ${String(state)}` : 'Seedr replied: task accepted';
           })(),
-          selectionApplied: false,
-          selectionError: 'Seedr transfers the complete torrent; selected-file transfer is not supported.',
+          selectionApplied: Boolean((result as any).selectionApplied),
+          selectionError: (result as any).selectionError || null,
         });;
       } else {
         setSeedrNotice(null);
