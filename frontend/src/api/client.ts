@@ -127,6 +127,7 @@ export const api = {
     pending?: boolean;
     createdPreview?: boolean;
     message?: string;
+    jobId?: string;
   }> {
     const request = async () => {
       const res = await apiFetch('/api/v2/torrents/inspect-magnet', {
