@@ -117,7 +117,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
       setShowRecentSearches(false);
       setError('');
       saveRecentSearch(trimmed);
-      const data = await api.searchTorrents(trimmed, 10);
+      const data = await api.searchTorrents(trimmed, 50);
       setResults(data);
       setSearched(true);
 
