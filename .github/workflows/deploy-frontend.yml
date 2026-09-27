@@ -1,0 +1,93 @@
+name: Deploy Frontend to Oracle VPS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-oracle-main
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    env:
+      VITE_API_URL: ${{ secrets.VITE_API_URL || 'https://torrent-studio-vercel-render-seedr.onrender.com' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Prepare SSH
+        working-directory: .
+        env:
+          ORACLE_SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+        run: |
+          set -eu
+          test -n "${ORACLE_SSH_KEY}" || { echo "Missing ORACLE_SSH_KEY secret"; exit 1; }
+          mkdir -p "${HOME}/.ssh"
+          printf '%s\n' "${ORACLE_SSH_KEY}" > "${HOME}/.ssh/id_ed25519"
+          chmod 600 "${HOME}/.ssh/id_ed25519"
+
+          PORT="${{ secrets.ORACLE_SSH_PORT || '22' }}"
+          ssh-keyscan -p "${PORT}" "${{ secrets.ORACLE_HOST }}" >> "${HOME}/.ssh/known_hosts"
+
+      - name: Package frontend
+        working-directory: frontend
+        run: tar -czf ../frontend-dist.tar.gz -C dist .
+
+      - name: Upload frontend
+        working-directory: .
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          ORACLE_PORT: ${{ secrets.ORACLE_SSH_PORT || '22' }}
+          ORACLE_FRONTEND_PATH: ${{ secrets.ORACLE_FRONTEND_PATH }}
+        run: |
+          set -eu
+          test -n "${ORACLE_HOST}" || { echo "Missing ORACLE_HOST secret"; exit 1; }
+          test -n "${ORACLE_USER}" || { echo "Missing ORACLE_USER secret"; exit 1; }
+          test -n "${ORACLE_FRONTEND_PATH}" || { echo "Missing ORACLE_FRONTEND_PATH secret"; exit 1; }
+
+          ssh -p "${ORACLE_PORT}" "${ORACLE_USER}@${ORACLE_HOST}"             "mkdir -p '${ORACLE_FRONTEND_PATH}'"
+
+          scp -P "${ORACLE_PORT}" frontend-dist.tar.gz             "${ORACLE_USER}@${ORACLE_HOST}:${ORACLE_FRONTEND_PATH}/.frontend-release.tar.gz"
+
+      - name: Activate frontend
+        working-directory: .
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          ORACLE_PORT: ${{ secrets.ORACLE_SSH_PORT || '22' }}
+          ORACLE_FRONTEND_PATH: ${{ secrets.ORACLE_FRONTEND_PATH }}
+        run: |
+          set -eu
+          ssh -p "${ORACLE_PORT}" "${ORACLE_USER}@${ORACLE_HOST}"             "tar -xzf '${ORACLE_FRONTEND_PATH}/.frontend-release.tar.gz' -C '${ORACLE_FRONTEND_PATH}' && rm -f '${ORACLE_FRONTEND_PATH}/.frontend-release.tar.gz'"
+
+          echo "Frontend deployed to ${ORACLE_FRONTEND_PATH}"
