@@ -953,7 +953,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                       Experimental Seedr selection test
                     </div>
                     <p className="text-[10px] text-slate-500 mt-0.5">
-                      Read-only check. It does not pause the torrent and does not change file selection.
+                      Read-only check. It never pauses the torrent and never changes the Seedr file selection.
                     </p>
                   </div>
                   <button
