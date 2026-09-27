@@ -347,8 +347,9 @@ export const api = {
     };
   },
 
-  openSeedrFileDownload(fileId: string): void {
-    const url = '/api/seedr/files/' + encodeURIComponent(fileId) + '/download/direct';
+  openSeedrFileDownload(fileId: string, filename = ''): void {
+    const query = filename ? '?filename=' + encodeURIComponent(filename) : '';
+    const url = '/api/seedr/files/' + encodeURIComponent(fileId) + '/download/direct' + query;
     window.open(API_BASE + url, '_blank', 'noopener,noreferrer');
   },
 
@@ -382,9 +383,10 @@ export const api = {
     };
   },
 
-  openSeedrFolderDownload(folderId: string): void {
-    const url = '/api/seedr/folders/' + encodeURIComponent(folderId) + '/download/direct';
-    window.open(url, '_blank', 'noopener,noreferrer');
+  openSeedrFolderDownload(folderId: string, filename = ''): void {
+    const query = filename ? '?filename=' + encodeURIComponent(filename) : '';
+    const url = '/api/seedr/folders/' + encodeURIComponent(folderId) + '/download/direct' + query;
+    window.open(API_BASE + url, '_blank', 'noopener,noreferrer');
   },
 
   async getSeedrFolderDownload(folderId: string): Promise<{ url: string }> {
