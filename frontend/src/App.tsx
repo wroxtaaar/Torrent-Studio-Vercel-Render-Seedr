@@ -1083,46 +1083,70 @@ export default function App() {
           ''
         ).trim();
 
+        const completedTorrentName = String(
+          seedrNotice.name ||
+          (result as any).name ||
+          progressResult.name ||
+          ''
+        ).trim();
+
         const refreshCompletedLibrary = async () => {
-          for (let attempt = 0; attempt < 3; attempt += 1) {
+          // Seedr can report the task as complete slightly before the folder
+          // becomes visible in /fs/folder/<library>/contents. Keep refreshing
+          // until the folder is actually exposed instead of requiring the user
+          // to press "Refresh Seedr" manually.
+          for (let attempt = 0; attempt < 12; attempt += 1) {
             const refreshed = await loadSeedrLibrary();
-            const completedFolder = refreshed?.folders?.find(
-              folder => String(folder.folderId || folder.id) === completedFolderId
-            );
+            const completedFolder = refreshed?.folders?.find(folder => {
+              const folderId = String(folder.folderId || folder.id || '').trim();
+              const folderName = String(folder.name || '').trim();
+              return (
+                (completedFolderId && folderId === completedFolderId) ||
+                (!completedFolderId &&
+                  completedTorrentName &&
+                  folderName.toLowerCase() === completedTorrentName.toLowerCase())
+              );
+            });
 
             if (completedFolder) {
+              const resolvedFolderId = String(
+                completedFolder.folderId || completedFolder.id || completedFolderId || ''
+              ).trim();
+
               // Fetch the newly completed folder immediately so its file rows,
               // stream IDs, sizes, and download actions are available without
               // waiting for the rest of the library prefetch.
-              try {
-                const contents = await api.getSeedrFolderContents(completedFolderId);
-                const mapped = contents.files.map(file => ({
-                  id: file.id,
-                  streamId: file.streamId,
-                  name: file.name,
-                  size: Number(file.size) || 0,
-                  folderId: file.folderId || completedFolderId,
-                  folderPath: completedFolder.path,
-                }));
+              if (resolvedFolderId) {
+                try {
+                  const contents = await api.getSeedrFolderContents(resolvedFolderId);
+                  const mapped = contents.files.map(file => ({
+                    id: file.id,
+                    streamId: file.streamId,
+                    name: file.name,
+                    size: Number(file.size) || 0,
+                    folderId: file.folderId || resolvedFolderId,
+                    folderPath: completedFolder.path,
+                  }));
 
-                setSeedrFolderContentsCache(prev => ({
-                  ...prev,
-                  [completedFolderId]: mapped,
-                }));
+                  setSeedrFolderContentsCache(prev => ({
+                    ...prev,
+                    [resolvedFolderId]: mapped,
+                  }));
 
-                if (selectedSeedrFolderId === completedFolderId) {
-                  setSeedrFiles(mapped);
-                  setSeedrFolderContentsLoading(false);
+                  if (selectedSeedrFolderId === resolvedFolderId) {
+                    setSeedrFiles(mapped);
+                    setSeedrFolderContentsLoading(false);
+                  }
+                } catch (error) {
+                  console.warn('Failed to load completed Seedr file details:', error);
                 }
-              } catch (error) {
-                console.warn('Failed to load completed Seedr file details:', error);
               }
 
               break;
             }
 
-            if (attempt < 2) {
-              await new Promise(resolve => window.setTimeout(resolve, 1000));
+            if (attempt < 11) {
+              await new Promise(resolve => window.setTimeout(resolve, 1500));
             }
           }
         };
