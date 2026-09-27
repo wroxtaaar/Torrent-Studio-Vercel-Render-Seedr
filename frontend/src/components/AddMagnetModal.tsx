@@ -45,11 +45,6 @@ interface AddMagnetModalProps {
   initialSourceUrl?: string;
   initialDescriptorUrl?: string;
   onBackgroundChange?: (state: { active: boolean; title: string; message: string; ready?: boolean; error?: string; jobId?: string }) => void;
-  selectionReason?: {
-    remainingSpace: number;
-    torrentSize: number;
-    torrentName: string;
-  } | null;
 }
 
 interface InspectFileItem {
@@ -71,8 +66,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   initialMagnet = '',
   initialSourceUrl = '',
   initialDescriptorUrl = '',
-  onBackgroundChange,
-  selectionReason = null
+  onBackgroundChange
 }) => {
   const [magnetInput, setMagnetInput] = useState('');
   const [category, setCategory] = useState(defaultFolder);
@@ -87,18 +81,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   const [inspectedHash, setInspectedHash] = useState('');
   const [inspectedTorrentName, setInspectedTorrentName] = useState('');
   const [backgroundMode, setBackgroundMode] = useState(false);
-  const [isTestingSeedrSelection, setIsTestingSeedrSelection] = useState(false);
-  const [seedrSelectionTestResult, setSeedrSelectionTestResult] = useState<{
-    taskId: number | string;
-    created: boolean;
-    unwanted: unknown;
-    writeAccepted: boolean;
-    writeError?: string | null;
-    acceptedBitOrder?: string | null;
-    selectedSize?: number;
-    totalSize?: number;
-  } | null>(null);
-
   const inspectTimeoutRef = useRef<any>(null);
   const [copiedMagnet, setCopiedMagnet] = useState(false);
 
@@ -540,56 +522,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     }
   };
 
-  const handleSeedrSelectionProbe = async () => {
-    if (inspectedFiles.length < 2) {
-      setError('Use a multi-file torrent for the Seedr selection test.');
-      return;
-    }
-
-    try {
-      setIsTestingSeedrSelection(true);
-      setError('');
-      setSeedrSelectionTestResult(null);
-
-      const quota = await api.getSeedrQuota();
-      if (!quota.configured) {
-        throw new Error('Seedr is not configured.');
-      }
-      if (selectedCount === 0) {
-        throw new Error('Select at least one file before testing Seedr selection.');
-      }
-
-      const magnet = await resolveMagnetUri();
-      const result = await api.addSelectedSeedrFiles(
-        magnet,
-        inspectedFiles.map(f => ({ index: f.index, name: f.name, size: f.size })),
-        selectedFiles.map(f => f.index),
-        inspectedTorrentName || undefined
-      );
-
-      setSeedrSelectionTestResult({
-        taskId: result.taskId,
-        created: Boolean(result.created),
-        unwanted: result.unwanted,
-        writeAccepted: Boolean(result.writeAccepted),
-        writeError: result.writeError || null,
-        acceptedBitOrder: result.acceptedBitOrder || null,
-        selectedSize: Number(result.selectedSize || totalSelectedSize),
-        totalSize: Number(result.totalSize || totalTorrentSize)
-      });
-
-      setInspectionSource(
-        result.writeAccepted
-          ? `✓ Seedr accepted the selected-file bitmap. Selected ${formatBytes(totalSelectedSize)} of ${formatBytes(totalTorrentSize)}.`
-          : `Seedr task was created, but the selection write failed: ${result.writeError || 'unknown error'}`
-      );
-    } catch (err: any) {
-      setError(err?.message || 'Could not test Seedr selective-download support.');
-    } finally {
-      setIsTestingSeedrSelection(false);
-    }
-  };
-
   const handleDownloadTorrent = async () => {
     if (!inspectedHash) {
       setError('The torrent hash is not available yet.');
@@ -660,13 +592,14 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
       // failure, because that path starts the full torrent.
       let selectedBackend: 'seedr' | 'qbittorrent' = 'qbittorrent';
       try {
-        // Once the user has selected the files, the selected size—not the
-        // aggregate torrent size—determines whether Seedr can handle it.
+        // Seedr transfers the entire torrent; it cannot receive only the
+        // selected files. If the COMPLETE torrent fits, Seedr gets the whole
+        // torrent. Otherwise qBittorrent handles the selected-file priorities.
         const quota = await api.getSeedrQuota();
         if (
           quota.configured &&
-          totalSelectedSize > 0 &&
-          totalSelectedSize <= quota.remainingSpace
+          totalTorrentSize > 0 &&
+          totalTorrentSize <= quota.remainingSpace
         ) {
           selectedBackend = 'seedr';
         }
@@ -1082,9 +1015,9 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
         {/* Modal Footer */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-3 sm:px-5 py-3 border-t border-slate-800 bg-slate-900/95">
           <div className="text-[11px] sm:text-xs text-slate-400 w-full sm:w-auto">
-            {selectionReason ? (
+            {isSingleFile && selectedCount > 0 ? (
               <span className="text-amber-300">
-                Selected files will be sent to Seedr when they fit the available quota
+                Seedr transfers the entire torrent. File selection applies to qBittorrent.
               </span>
             ) : isSingleFile && inspectedFiles.length > 0 ? (
               <span>Ready to download</span>
@@ -1121,7 +1054,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
               disabled={
                 isLoading ||
                 isInspecting ||
-                (Boolean(selectionReason) && totalSelectedSize > selectionReason.remainingSpace) ||
                 (inspectedFiles.length > 0 && selectedCount === 0)
               }
               className="flex-1 sm:flex-none px-4 sm:px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-cyan-500/20"
@@ -1134,8 +1066,6 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
               <span>
                 {isLoading
                   ? 'Adding Task...'
-                  : selectionReason
-                  ? 'Free Seedr Space to Continue'
                   : isSingleFile && selectedCount > 0
                   ? 'Download File'
                   : selectedCount > 0
