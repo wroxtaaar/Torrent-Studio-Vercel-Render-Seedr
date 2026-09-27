@@ -135,6 +135,8 @@ class MagnetRequest(BaseModel):
     folder_id: str | int | None = None
     torrent_name: str | None = None
     size: int | float | None = None
+    selected_indexes: list[int] | None = None
+    manifest: list[dict[str, Any]] | None = None
 
 
 
@@ -1270,35 +1272,8 @@ def task_id(task: dict[str, Any]) -> str:
     return str(task.get("user_torrent_id") or task.get("id") or task.get("task_id") or "").strip()
 
 async def rename_seedr_folder(folder_id: str, name: str) -> bool:
-    """Best-effort rename of a Seedr folder to the canonical torrent name."""
-    folder_id = str(folder_id or "").strip()
-    name = str(name or "").strip()
-    if not folder_id or not name:
-        return False
-
-    safe_name = name[:255]
-    # Seedr documentation lists rename_to, while its example uses name.
-    # Try the documented form first, then the example form.
-    for body in (
-        {"rename_to": safe_name},
-        {"name": safe_name},
-    ):
-        try:
-            await seedr_request(
-                f"/fs/folder/{quote(folder_id)}/rename",
-                "POST",
-                body,
-                form=True,
-            )
-            return True
-        except HTTPException as exc:
-            if exc.status_code in (400, 404, 405):
-                continue
-            logger.info("Seedr folder rename failed for %s: HTTP %s", folder_id, exc.status_code)
-            return False
-        except Exception as exc:
-            logger.info("Seedr folder rename failed for %s: %s", folder_id, exc)
-            return False
+    # Folder rename is deliberately not part of the free-account download path.
+    # Seedr can expose the generated folder name asynchronously.
     return False
 
 
@@ -2651,28 +2626,114 @@ async def seedr_quota():
         "remainingSpace": max(0, max_space - used),
     }
 
+def build_seedr_unwanted_bitmap(file_count: int, selected_indexes: list[int]) -> str:
+    """Build Seedr's base64 unwanted-file bitmap from torrent metadata indexes.
+
+    Seedr's documented unwanted API uses one bit per file index. We derive the
+    bitmap from the metadata already shown to the user, so no Seedr task-list
+    or filesystem endpoint is required before selection is applied.
+    """
+    count = max(0, int(file_count))
+    selected = {
+        int(index)
+        for index in selected_indexes
+        if isinstance(index, int) and 0 <= int(index) < count
+    }
+    raw = bytearray((count + 7) // 8)
+
+    # Seedr's documented bitmap example and the existing integration use
+    # least-significant-bit-first indexing.
+    for index in range(count):
+        if index in selected:
+            continue
+        raw[index // 8] |= 1 << (index % 8)
+
+    return base64.b64encode(bytes(raw)).decode("ascii")
+
+
+async def apply_seedr_file_selection(
+    tid: str,
+    file_count: int,
+    selected_indexes: list[int],
+) -> dict[str, Any]:
+    """Apply selection without pause/resume or collection-level task APIs."""
+    bitmap = build_seedr_unwanted_bitmap(file_count, selected_indexes)
+
+    try:
+        await seedr_request(
+            f"/tasks/{quote(str(tid))}/unwanted",
+            "POST",
+            {"unwanted": bitmap},
+            base_url=SEEDR_V2_BASE,
+        )
+    except SeedrError as exc:
+        if exc.status_code in (401, 403, 404, 405):
+            raise SeedrError(
+                "SEEDR_SELECTIVE_FILES_UNSUPPORTED",
+                exc.status_code,
+                "This Seedr account/token does not allow the task file-selection endpoint. The torrent was not reported as selectively downloaded.",
+            ) from exc
+        raise
+
+    # Verification is intentionally best-effort. GET /unwanted is not required
+    # for the free-account path because some accounts expose POST but deny the
+    # read-back endpoint. A successful POST is the authoritative write result.
+    return {
+        "applied": True,
+        "fileCount": file_count,
+        "selectedIndexes": sorted(set(selected_indexes)),
+        "unwanted": bitmap,
+    }
+
+
 @app.post("/api/seedr/add")
 async def seedr_add(body: MagnetRequest):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
+
     folder = str(body.folder_id or SEEDR_LIBRARY_FOLDER_ID).strip()
     if not folder.isdigit():
         raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
+
     magnet = normalize_magnet(body.magnet)
     h = info_hash(magnet)
     if not h:
         raise HTTPException(400, "A valid BTIH magnet link is required")
 
-    # Seedr transfers the complete torrent. File selection cannot reduce the
-    # storage required by a Seedr transfer, so preflight the COMPLETE torrent
-    # size when the metadata-first frontend supplies it.
-    requested_size = int(float(body.size or 0))
-    if requested_size > 0:
+    manifest = body.manifest if isinstance(body.manifest, list) else []
+    selected_indexes = sorted({
+        int(index)
+        for index in (body.selected_indexes or [])
+        if isinstance(index, int) and index >= 0
+    })
+
+    # Metadata-first flow: the browser already resolved the torrent metadata
+    # without starting Seedr. For selective Seedr downloads, quota is checked
+    # against the selected files, not the complete torrent.
+    if manifest:
+        file_count = len(manifest)
+        valid_indexes = {int(item.get("index", i)) for i, item in enumerate(manifest) if isinstance(item, dict)}
+        selected_indexes = [index for index in selected_indexes if index in valid_indexes]
+        if not selected_indexes:
+            raise HTTPException(400, "Select at least one file before sending the torrent to Seedr.")
+
+        selected_size = sum(
+            int(float(item.get("size") or 0))
+            for i, item in enumerate(manifest)
+            if isinstance(item, dict) and int(item.get("index", i)) in set(selected_indexes)
+        )
+        total_size = sum(
+            int(float(item.get("size") or 0))
+            for item in manifest
+            if isinstance(item, dict)
+        )
+
         try:
             quota_result = seedr_data(await seedr_request("/user"))
             storage = quota_result.get("account", {}).get("storage", {}) if isinstance(quota_result, dict) else {}
             if not isinstance(storage, dict):
                 storage = quota_result.get("storage", {}) if isinstance(quota_result, dict) else {}
+
             max_space = int(float(
                 storage.get("limit")
                 or storage.get("max_space")
@@ -2693,41 +2754,76 @@ async def seedr_add(body: MagnetRequest):
                 raise ValueError("invalid Seedr quota")
             remaining_space = max(0, max_space - used_space)
         except (SeedrError, TypeError, ValueError, AttributeError) as exc:
-            raise HTTPException(
+            raise SeedrError(
+                "SEEDR_QUOTA_UNAVAILABLE",
                 503,
-                "Seedr account storage information is temporarily unavailable. The torrent was not submitted."
+                "Seedr account storage information is temporarily unavailable. The torrent was not submitted.",
             ) from exc
 
-        if requested_size > remaining_space:
+        if selected_size > remaining_space:
             raise SeedrError(
                 "SEEDR_INSUFFICIENT_SPACE",
                 413,
-                f"This torrent requires {requested_size} bytes, but Seedr has only {remaining_space} bytes remaining. Seedr cannot receive only selected files from a torrent."
+                f"The selected files require {selected_size} bytes, but Seedr has only {remaining_space} bytes remaining.",
             )
+    else:
+        file_count = 0
+        selected_size = int(float(body.size or 0))
+        total_size = selected_size
 
-    # Add directly to Seedr. Do not fall back to the collection-level
-    # /tasks lookup: that endpoint is unavailable on this free account and a
-    # duplicate/conflict should be surfaced instead of mutating an existing task.
-    task = await add_task(magnet, int(folder))
+        # Legacy/direct add without metadata: only use Seedr when the complete
+        # torrent size is known and fits. We never pretend selection happened
+        # when no manifest was supplied.
+        if selected_size > 0:
+            try:
+                quota_result = seedr_data(await seedr_request("/user"))
+                storage = quota_result.get("account", {}).get("storage", {}) if isinstance(quota_result, dict) else {}
+                max_space = int(float(storage.get("limit") or 0))
+                used_space = int(float(storage.get("used") or 0))
+                remaining_space = max(0, max_space - used_space)
+            except Exception as exc:
+                raise SeedrError(
+                    "SEEDR_QUOTA_UNAVAILABLE",
+                    503,
+                    "Seedr account storage information is temporarily unavailable. Resolve metadata before sending this torrent.",
+                ) from exc
+            if selected_size > remaining_space:
+                raise SeedrError(
+                    "SEEDR_INSUFFICIENT_SPACE",
+                    413,
+                    f"This torrent requires {selected_size} bytes, but Seedr has only {remaining_space} bytes remaining.",
+                )
 
-    task = unwrap_seedr_task(task)
+    # This is deliberately the only task-creation call. Free-account-safe flow:
+    # POST /tasks -> immediately POST /tasks/{id}/unwanted when a subset was
+    # selected. No pause/resume, no GET /tasks collection, no library mutation.
+    task = unwrap_seedr_task(await add_task(magnet, int(folder)))
     tid = task_id(task)
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
 
-    torrent_name = str(body.torrent_name or "").strip()
     task_id_value = str(tid).strip()
+    torrent_name = str(body.torrent_name or "").strip()
     task_folder_id = seedr_task_folder_id(task)
 
-    # Keep the exact title chosen in the search result tied to the task even
-    # when Seedr has not created/exposed its folder yet.
     if torrent_name and task_id_value:
         _seedr_torrent_names_by_task[task_id_value] = torrent_name
 
-    folder_renamed = False
-    if torrent_name and task_folder_id:
-        _seedr_torrent_names[task_folder_id] = torrent_name
-        folder_renamed = await rename_seedr_folder(task_folder_id, torrent_name)
+    selection_applied = False
+    selection_error = ""
+    if manifest and len(selected_indexes) < file_count:
+        try:
+            selection = await apply_seedr_file_selection(
+                task_id_value,
+                file_count,
+                selected_indexes,
+            )
+            selection_applied = bool(selection.get("applied"))
+        except SeedrError as exc:
+            selection_error = exc.detail
+            # Do not claim that only selected files are downloading. The task
+            # was created, but the account did not accept the selection write.
+            raise
 
     schedule_seedr_cleanup(
         task_id_value,
@@ -2741,8 +2837,12 @@ async def seedr_add(body: MagnetRequest):
         "id": int(tid) if tid.isdigit() else tid,
         "torrent_name": torrent_name,
         "folder_id": task_folder_id or None,
-        "folder_renamed": folder_renamed,
         "task": task,
+        "selectionApplied": selection_applied,
+        "selectionError": selection_error or None,
+        "selectedIndexes": selected_indexes,
+        "selectedSize": selected_size,
+        "totalSize": total_size,
     }
 
 @app.get("/api/seedr/tasks/{tid}/progress")
@@ -2791,13 +2891,8 @@ async def seedr_task_progress(tid: str):
         _seedr_torrent_names[task_folder_id] = canonical_name
         # Seedr can expose the folder only after the task starts. Rename at
         # that point, rather than only immediately after /tasks POST.
-        if previous_name != canonical_name:
-            try:
-                await rename_seedr_folder(task_folder_id, canonical_name)
-            except Exception:
-                pass
-            global _seedr_metadata_cache
-            _seedr_metadata_cache = None
+        # Do not call Seedr folder-management endpoints from the free-account
+        # progress path. The task state itself is sufficient for polling.
 
     seedr_task_display_name = canonical_name
     return {
