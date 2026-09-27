@@ -729,10 +729,12 @@ async def search_tv_eztv(query: str, limit: int = 30) -> list[dict[str, Any]]:
 
 async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
     """
-    Search through the dedicated Torrent Search MCP API.
+    Fast media search.
 
-    Torrent Studio no longer scrapes 1337x directly from Render. The search
-    service aggregates multiple sources and exposes a stable HTTP API.
+    Direct sources are started immediately and are never blocked by the
+    broad aggregate search service. The aggregate service is supplemental
+    and has a short timeout so one slow indexer cannot make the whole search
+    feel slow.
     """
     query = query.strip()
     if not query:
@@ -741,56 +743,53 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
     normalized_query, season, episode = _media_search_parts(query)
     aggregate_query = normalized_query or query
 
-    base = TORRENT_SEARCH_API_URL
-    search_url = f"{base}/torrent/search"
+    async def aggregate_search() -> list[dict[str, Any]]:
+        base = TORRENT_SEARCH_API_URL
+        search_url = f"{base}/torrent/search"
+        try:
+            async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+                response = await client.post(
+                    search_url,
+                    params={
+                        "query": aggregate_query,
+                        "max_items": 100,
+                        "per_source": 25,
+                    },
+                    headers={"Accept": "application/json"},
+                )
+                if response.status_code >= 400:
+                    return []
+                payload = response.json()
+                return payload if isinstance(payload, list) else []
+        except (httpx.HTTPError, ValueError):
+            return []
 
-    try:
-        async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
-            response = await client.post(
-                search_url,
-                # Fetch a broad candidate pool. We do relevance filtering here
-                # instead of letting global seed counts hide exact title matches.
-                params={"query": aggregate_query, "max_items": 200, "per_source": 50},
-                headers={"Accept": "application/json"},
-            )
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Torrent search service unavailable: {exc}") from exc
-
-    tv_results, movie_results, x1337_results = await asyncio.gather(
+    # All sources start together. In particular, direct 1337x is no longer
+    # waiting behind the potentially slow aggregate service.
+    tv_results, movie_results, x1337_results, aggregate_payload = await asyncio.gather(
         search_tv_eztv(query, limit=100),
         search_yts_movies(normalized_query, limit=100),
-        search_1337x_direct(query, limit=50),
+        search_1337x_direct(query, limit=min(max(limit * 2, 20), 50)),
+        aggregate_search(),
         return_exceptions=True,
     )
+
     if isinstance(tv_results, BaseException):
         tv_results = []
     if isinstance(movie_results, BaseException):
         movie_results = []
     if isinstance(x1337_results, BaseException):
         x1337_results = []
-
-    if response.status_code >= 400:
-        detail = response.text.strip()
-        raise HTTPException(
-            502,
-            f"Torrent search service returned HTTP {response.status_code}: {detail[:500]}",
-        )
-
-    try:
-        payload = response.json()
-    except Exception as exc:
-        raise HTTPException(502, "Torrent search service returned invalid JSON") from exc
-
-    if not isinstance(payload, list):
-        raise HTTPException(502, "Torrent search service returned an invalid result set")
+    if isinstance(aggregate_payload, BaseException):
+        aggregate_payload = []
 
     tokens = _search_tokens(normalized_query)
 
     # Keep aggregate candidates strictly media-focused and title-relevant.
     # This prevents anime, games, music and unrelated high-seed torrents from
     # appearing just because they share one generic search token.
-    aggregate_items = []
-    for item in payload:
+    aggregate_items: list[dict[str, Any]] = []
+    for item in aggregate_payload:
         if not isinstance(item, dict):
             continue
         title = str(item.get("filename") or item.get("title") or "")
@@ -799,23 +798,32 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
         if tokens and not all(token in normalized_title for token in tokens):
             continue
         if season is not None and not _season_episode_match(title, season, episode):
-            # Only apply season filtering when the title looks like a TV release.
-            # Movie searches have no season value.
             continue
         if category and any(
             blocked in category
             for blocked in ("anime", "games", "music", "software", "books")
         ):
             continue
-        if category and "video" not in category and "movie" not in category and "tv" not in category:
+        if category and not any(
+            allowed in category for allowed in ("video", "movie", "tv")
+        ):
             continue
         aggregate_items.append(item)
 
-    payload_items = list(tv_results) + list(movie_results) + list(x1337_results) + aggregate_items
+    # Prefer direct media sources. The aggregate service supplements them
+    # rather than determining whether the search succeeds.
+    payload_items = (
+        list(x1337_results)
+        + list(tv_results)
+        + list(movie_results)
+        + aggregate_items
+    )
 
     results: list[dict[str, Any]] = []
     seen_hashes: set[str] = set()
-    for item in payload_items[: max(limit * 4, 50)]:
+    max_candidates = max(limit * 6, 60)
+
+    for item in payload_items[:max_candidates]:
         if not isinstance(item, dict):
             continue
 
@@ -823,22 +831,28 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
         if not filename:
             continue
 
-        item_hash = info_hash(
-            str(item.get("magnet_link") or item.get("magnetUrl") or "")
-        ) or str(item.get("id") or "").strip()
+        magnet = str(
+            item.get("magnet_link") or item.get("magnetUrl") or ""
+        ).strip()
+        item_hash = info_hash(magnet) or str(item.get("id") or "").strip()
         if item_hash and item_hash in seen_hashes:
             continue
         if item_hash:
             seen_hashes.add(item_hash)
 
-        magnet = str(item.get("magnet_link") or item.get("magnetUrl") or "").strip()
-        source = str(item.get("source") or "torrent-search").strip()
+        source = str(
+            item.get("indexer") or item.get("source") or "torrent-search"
+        ).strip()
 
         size_value = item.get("size", 0)
-        size = int(size_value) if isinstance(size_value, (int, float)) else parse_size(str(size_value))
+        size = (
+            int(size_value)
+            if isinstance(size_value, (int, float))
+            else parse_size(str(size_value))
+        )
 
         results.append({
-            "guid": str(item.get("id") or ""),
+            "guid": str(item.get("guid") or item.get("id") or ""),
             "title": filename,
             "size": size,
             "seeders": int(item.get("seeders") or 0),
@@ -846,13 +860,18 @@ async def search_1337x(query: str, limit: int = 10) -> list[dict[str, Any]]:
             "indexer": source,
             "category": str(item.get("category") or ""),
             "protocol": "torrent",
-            "publishDate": str(item.get("date") or ""),
+            "publishDate": str(
+                item.get("publishDate") or item.get("date") or ""
+            ),
             "magnetUrl": magnet or None,
-            "infoHash": info_hash(magnet) if magnet else "",
+            "infoHash": item_hash if re.fullmatch(r"[0-9a-f]{40}", item_hash, re.I) else "",
             "downloadUrl": magnet or None,
-            "infoUrl": str(item.get("page_url") or ""),
-            "sourceUrl": str(item.get("page_url") or ""),
+            "infoUrl": str(item.get("infoUrl") or item.get("page_url") or ""),
+            "sourceUrl": str(item.get("sourceUrl") or item.get("page_url") or ""),
         })
+
+        if len(results) >= limit:
+            break
 
     return results
 
