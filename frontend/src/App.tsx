@@ -180,9 +180,10 @@ export default function App() {
 
   useEffect(() => {
     void refreshBackgroundMetadataJobs();
+    if (!hasActiveBackgroundMetadataJobs) return;
     const timer = window.setInterval(
       () => { void refreshBackgroundMetadataJobs(); },
-      hasActiveBackgroundMetadataJobs ? 5000 : 30000
+      5000
     );
     return () => window.clearInterval(timer);
   }, [refreshBackgroundMetadataJobs, hasActiveBackgroundMetadataJobs]);
@@ -959,7 +960,13 @@ export default function App() {
     };
 
     pollTorrents();
-    const interval = setInterval(pollTorrents, hasActiveQbtTransfers ? 5000 : 20000);
+    if (!hasActiveQbtTransfers) {
+      return () => {
+        isMounted = false;
+      };
+    }
+
+    const interval = setInterval(pollTorrents, 5000);
     return () => {
       isMounted = false;
       clearInterval(interval);
