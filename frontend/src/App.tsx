@@ -321,6 +321,7 @@ export default function App() {
     return {
       id: file.id,
       name: file.name,
+      streamId: file.streamId || file.id,
       path: (file.folderPath || '/Torrent Studio').replace(/\/$/, '') + '/' + file.name,
       folder: file.folderPath || '/Torrent Studio',
       size: Number(file.size) || 0,
@@ -2352,6 +2353,30 @@ export default function App() {
                         key={file.id}
                         file={file}
                         onPlay={(f) => {
+                          // Root "My Cloud Files" rows are Seedr files too, but
+                          // they used to bypass handleStreamSeedrFile and pass a
+                          // relative /api/seedr/files/stream URL directly to the
+                          // player. That works when the UI is served by Render,
+                          // but breaks on a Vercel frontend because the relative
+                          // URL points at Vercel instead of the Render backend.
+                          // Resolve Seedr streams through the same path used by
+                          // the working folder view so Vercel + Render keeps the
+                          // exact same browser-stream behavior.
+                          if (
+                            f.ownerId === 'seedr' &&
+                            (f.type === 'video' || f.type === 'audio')
+                          ) {
+                            void handleStreamSeedrFile({
+                              id: f.id,
+                              streamId: f.streamId || f.id,
+                              name: f.name,
+                              size: f.size,
+                              folderId: '',
+                              folderPath: f.folder || '/'
+                            });
+                            return;
+                          }
+
                           setActiveMediaFile(f);
                           setIsPlayerMinimized(false);
                         }}
