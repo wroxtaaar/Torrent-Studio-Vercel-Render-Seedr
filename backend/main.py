@@ -229,6 +229,39 @@ async def find_task_by_hash(h: str) -> dict[str, Any] | None:
         return task
     return None
 
+async def rename_seedr_folder(folder_id: str, name: str) -> bool:
+    """Best-effort rename of a Seedr folder to the canonical torrent name."""
+    folder_id = str(folder_id or "").strip()
+    name = str(name or "").strip()
+    if not folder_id or not name or not folder_id.isdigit():
+        return False
+
+    safe_name = name[:255]
+    # Seedr documentation lists rename_to, while its example uses name.
+    # Try the documented form first, then the example form.
+    for body in (
+        {"rename_to": safe_name},
+        {"name": safe_name},
+    ):
+        try:
+            await seedr_request(
+                f"/fs/folder/{quote(folder_id)}/rename",
+                "POST",
+                body,
+                form=True,
+            )
+            return True
+        except HTTPException as exc:
+            if exc.status_code in (400, 404, 405):
+                continue
+            logger.info("Seedr folder rename failed for %s: HTTP %s", folder_id, exc.status_code)
+            return False
+        except Exception as exc:
+            logger.info("Seedr folder rename failed for %s: %s", folder_id, exc)
+            return False
+    return False
+
+
 async def add_task(magnet: str, folder_id: int) -> dict[str, Any]:
     normalized = normalize_magnet(magnet)
     try:
@@ -1176,8 +1209,10 @@ async def seedr_add(body: MagnetRequest):
 
     torrent_name = str(body.torrent_name or "").strip()
     task_folder_id = seedr_task_folder_id(task)
+    folder_renamed = False
     if torrent_name and task_folder_id:
         _seedr_torrent_names[task_folder_id] = torrent_name
+        folder_renamed = await rename_seedr_folder(task_folder_id, torrent_name)
 
     return {
         "backend": "seedr",
@@ -1185,6 +1220,7 @@ async def seedr_add(body: MagnetRequest):
         "id": int(tid) if tid.isdigit() else tid,
         "torrent_name": torrent_name,
         "folder_id": task_folder_id or None,
+        "folder_renamed": folder_renamed,
         "task": task,
     }
 
