@@ -87,6 +87,62 @@ def arr(value: Any, keys: tuple[str, ...]) -> list[Any]:
                 return value[key]
     return []
 
+def unwrap_seedr_task(value: Any) -> dict[str, Any]:
+    """Normalize task responses that may be wrapped in data/task objects."""
+    current = value
+    for _ in range(4):
+        if not isinstance(current, dict):
+            return {}
+        nested = current.get("task")
+        if isinstance(nested, dict):
+            current = nested
+            continue
+        return current
+    return current if isinstance(current, dict) else {}
+
+
+def seedr_task_folder_id(task: dict[str, Any]) -> str:
+    nested_torrent = task.get("torrent") if isinstance(task.get("torrent"), dict) else {}
+    payload = task.get("torrent_payload") if isinstance(task.get("torrent_payload"), dict) else {}
+
+    return str(
+        task.get("folder_created_id")
+        or task.get("folder_created")
+        or task.get("folder_id")
+        or task.get("folderId")
+        or nested_torrent.get("folder_created_id")
+        or nested_torrent.get("folder_id")
+        or nested_torrent.get("folderId")
+        or payload.get("folder_created_id")
+        or payload.get("folder_id")
+        or payload.get("folderId")
+        or ""
+    ).strip()
+
+
+def seedr_task_name(task: dict[str, Any]) -> str:
+    nested_torrent = task.get("torrent") if isinstance(task.get("torrent"), dict) else {}
+    payload = task.get("torrent_payload") if isinstance(task.get("torrent_payload"), dict) else {}
+    meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
+
+    return str(
+        task.get("torrent_name")
+        or task.get("torrent_title")
+        or task.get("torrentTitle")
+        or task.get("title")
+        or task.get("name")
+        or nested_torrent.get("torrent_name")
+        or nested_torrent.get("title")
+        or nested_torrent.get("name")
+        or payload.get("torrent_name")
+        or payload.get("title")
+        or payload.get("name")
+        or meta.get("torrent_name")
+        or meta.get("title")
+        or ""
+    ).strip()
+
+
 def normalize_magnet(magnet: str) -> str:
     value = re.sub(r"[\r\n\t]+", "", str(magnet or "").strip())
     decoded = unquote(value)
@@ -154,12 +210,12 @@ def task_complete(task: dict[str, Any]) -> bool:
 
 async def find_task_by_hash(h: str) -> dict[str, Any] | None:
     payload = seedr_data(await seedr_request("/tasks"))
-    for raw in arr(payload, ("tasks", "torrents")):
-        task = seedr_data(raw)
-        if not isinstance(task, dict) or task_hash(task) != h:
+    for raw in arr(payload, ("tasks", "torrents", "items")):
+        task = unwrap_seedr_task(seedr_data(raw))
+        if not task or task_hash(task) != h:
             continue
         if task_complete(task):
-            folder = str(task.get("folder_created_id") or "").strip()
+            folder = seedr_task_folder_id(task)
             if not folder:
                 continue
             try:
@@ -1118,7 +1174,7 @@ async def seedr_add(body: MagnetRequest):
         raise HTTPException(502, "Seedr did not return a task id")
 
     torrent_name = str(body.torrent_name or "").strip()
-    task_folder_id = str(task.get("folder_created_id") or task.get("folder_id") or "").strip()
+    task_folder_id = seedr_task_folder_id(task)
     if torrent_name and task_folder_id:
         _seedr_torrent_names[task_folder_id] = torrent_name
 
@@ -1162,19 +1218,17 @@ async def seedr_task_progress(tid: str):
         "waiting" if state in {"queued", "pending", "waiting", "paused", "stopped"} else "downloading"
     )
 
-    task_folder_id = str(task.get("folder_created_id") or "").strip()
-    seedr_task_name = str(
+    task_folder_id = seedr_task_folder_id(task)
+    seedr_task_display_name = str(
         _seedr_torrent_names.get(task_folder_id)
-        or task.get("torrent_name")
-        or task.get("title")
-        or task.get("name")
+        or seedr_task_name(task)
         or ""
     ).strip()
     return {
         "taskId": tid,
         "status": status,
         "progress": progress,
-        "name": seedr_task_name,
+        "name": seedr_task_display_name,
         "folderId": task_folder_id,
     }
 
@@ -1192,7 +1246,7 @@ async def seedr_task(tid: str):
     if complete:
         progress = 100
     files = await task_contents(tid)
-    folder_id = str(task.get("folder_created_id") or (files[0].get("folderId") if files else ""))
+    folder_id = seedr_task_folder_id(task) or str(files[0].get("folderId") if files else "")
     folderNameValue = await folder_name(folder_id) if folder_id else ""
     for f in files:
         f["folderPath"] = "/Torrent Studio" + ("/" + folderNameValue if folderNameValue else "")
