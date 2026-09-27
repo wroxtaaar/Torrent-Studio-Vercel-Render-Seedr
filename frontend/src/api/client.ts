@@ -370,39 +370,74 @@ export const api = {
       throw new Error('A valid magnet URL is required');
     }
 
-    // Seedr transfers the complete torrent. File selection is handled by
-    // the qBittorrent path; send the full torrent size for Seedr quota checks.
-    const size = (manifest || []).reduce((sum, file) => sum + Number(file.size || 0), 0) || undefined;
-    const res = await apiFetch(API_BASE + '/api/seedr/add', {
+    if (forceBackend === 'seedr') {
+      const selection = (selectedFiles || []).map(Number).filter(Number.isInteger);
+      const fullManifest = Array.isArray(manifest) ? manifest : [];
+      const size = fullManifest.reduce((sum, file) => sum + Number(file.size || 0), 0) || undefined;
+
+      const res = await apiFetch(API_BASE + '/api/seedr/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          magnet,
+          size,
+          torrent_name: torrentName || undefined,
+          selected_indexes: selection,
+          manifest: fullManifest
+        })
+      });
+
+      const body = await res.text();
+      let data: any = null;
+      try { data = body ? JSON.parse(body) : null; } catch {}
+
+      if (!res.ok) {
+        const error = new Error(data?.error || data?.message || data?.detail || body || `Seedr add failed (HTTP ${res.status})`);
+        if (res.status === 413) (error as any).code = data?.code || 'SEEDR_INSUFFICIENT_SPACE';
+        else if (data?.code) (error as any).code = data.code;
+        throw error;
+      }
+
+      return {
+        backend: 'seedr',
+        seedrTaskId: data?.task_id ?? data?.id ?? data?.task?.id ?? null,
+        seedrResponse: data,
+        seedrFolderName: torrentName || data?.torrent_name || data?.name || null,
+        seedrFolderId: data?.folder_id ?? data?.task?.folder_id ?? null,
+        selectionApplied: Boolean(data?.selectionApplied),
+        selectionError: data?.selectionError || null
+      };
+    }
+
+    // qBittorrent path retains the existing selected-file priority behavior.
+    const res = await apiFetch(API_BASE + '/api/v2/torrents/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        magnet,
-        size,
-        folder_id: undefined,
-        torrent_name: torrentName || undefined
+        urls: magnet,
+        category,
+        selectedFiles: selectedFiles || [],
+        manifest: manifest || [],
+        existingHash,
+        forceBackend: 'qbittorrent',
+        selectedNames: selectedNames || [],
+        seedrTaskId,
+        torrentName
       })
     });
+
     const body = await res.text();
     let data: any = null;
     try { data = body ? JSON.parse(body) : null; } catch {}
     if (!res.ok) {
-      const error = new Error(data?.error || data?.message || data?.detail || body || `Seedr add failed (HTTP ${res.status})`);
+      const error = new Error(data?.error || data?.message || data?.detail || body || `Torrent add failed (HTTP ${res.status})`);
       if (res.status === 413) (error as any).code = 'SEEDR_INSUFFICIENT_SPACE';
+      if (data?.code) (error as any).code = data.code;
+      Object.assign(error as any, data || {});
       throw error;
     }
-
-    let taskId = data?.task_id ?? data?.id ?? data?.task?.id ?? data?.task?.task_id ?? null;
-    return {
-      backend: 'seedr',
-      seedrTaskId: taskId,
-      seedrResponse: data,
-      seedrFolderName: torrentName || data?.name || data?.task?.name || null,
-      seedrFolderId: data?.folder_id ?? data?.task?.folder_id ?? null,
-      selectionApplied: false
-    };
+    return data;
   },
-
 
   async getSeedrTokenDiagnostic(): Promise<any> {
     const res = await apiFetch('/api/seedr/token-diagnostic');
