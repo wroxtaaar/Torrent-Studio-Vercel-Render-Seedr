@@ -23,7 +23,8 @@ from pydantic import BaseModel
 
 APP_NAME = "Torrent Studio API"
 logger = logging.getLogger("torrent-studio")
-SEEDR_BASE = "https://www.seedr.cc/api/v0.1/p"
+SEEDR_BASE = os.getenv("SEEDR_API_BASE", "https://api.seedr.cc/api/v0.1/p").rstrip("/")
+SEEDR_API_FALLBACK_BASE = "https://www.seedr.cc/api/v0.1/p"
 SEEDR_MEDIA_BASE = "https://www.seedr.cc/api"
 SEEDR_V2_BASE = "https://v2.seedr.cc/api/v0.1/p"
 SEEDR_TOKEN = os.getenv("SEEDR_API_TOKEN", "").strip()
@@ -962,9 +963,15 @@ def seedr_error_message(status_code: int, data: Any, raw: str) -> str:
 
 async def seedr_request(path: str, method: str = "GET", body: Any = None, form: bool = False) -> Any:
     if not SEEDR_TOKEN:
-        raise HTTPException(503, "Seedr is not configured")
-    url = SEEDR_BASE.rstrip("/") + "/" + str(path).lstrip("/")
-    headers = {"Authorization": f"Bearer {SEEDR_TOKEN}", "Accept": "application/json"}
+        raise SeedrError(
+            "SEEDR_TOKEN_MISSING",
+            503,
+            "Seedr API token is not configured. Set SEEDR_API_TOKEN in Render.",
+        )
+
+    normalized_path = "/" + str(path).lstrip("/")
+    token = seedr_access_token()
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     kwargs: dict[str, Any] = {}
     if body is not None:
         if form:
@@ -973,21 +980,49 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
         else:
             headers["Content-Type"] = "application/json"
             kwargs["json"] = body
+
+    bases = [SEEDR_BASE.rstrip("/")]
+    fallback = SEEDR_API_FALLBACK_BASE.rstrip("/")
+    if fallback not in bases:
+        bases.append(fallback)
+
+    last_status = 0
+    last_data: Any = None
+    last_raw = ""
     async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
-        response = await client.request(method, url, headers=headers, **kwargs)
-    raw = response.text
-    try:
-        data = response.json() if raw else None
-    except Exception:
-        data = raw
-    if response.status_code >= 400:
-        code, status_code, detail = seedr_problem(response.status_code, data, raw)
-        raise SeedrError(code, status_code, detail)
-    if isinstance(data, dict):
-        soft = str(data.get("reason_phrase") or "").strip().lower()
-        if soft == "not_enough_space":
-            raise HTTPException(413, "Not enough storage space in your Seedr account.")
-    return data
+        for base in bases:
+            url = base + normalized_path
+            response = await client.request(method, url, headers=headers, **kwargs)
+            raw = response.text
+            try:
+                data = response.json() if raw else None
+            except Exception:
+                data = raw
+
+            if response.status_code < 400:
+                if isinstance(data, dict):
+                    soft = str(data.get("reason_phrase") or "").strip().lower()
+                    if soft == "not_enough_space":
+                        raise SeedrError(
+                            "SEEDR_QUOTA_UNAVAILABLE",
+                            413,
+                            "Seedr reports insufficient storage space for this operation.",
+                        )
+                return data
+
+            last_status, last_data, last_raw = response.status_code, data, raw
+
+            # A hostname-level 401 is ambiguous because Seedr currently exposes
+            # API examples under both api.seedr.cc and www.seedr.cc. Try the
+            # second documented host before telling the user that their token
+            # itself is invalid.
+            if response.status_code == 401 and base != bases[-1]:
+                logger.warning("Seedr API host rejected authentication; trying fallback host")
+                continue
+            break
+
+    code, status_code, detail = seedr_problem(last_status, last_data, last_raw)
+    raise SeedrError(code, status_code, detail)
 
 def arr(value: Any, keys: tuple[str, ...]) -> list[Any]:
     if isinstance(value, list):
@@ -2461,6 +2496,36 @@ async def api_search(q: str = Query(..., min_length=1), limit: int = Query(50, g
 @app.get("/api/health")
 async def api_health():
     return {"name": APP_NAME, "status": "ok"}
+
+@app.get("/api/seedr/auth-status")
+async def seedr_auth_status():
+    if not SEEDR_TOKEN:
+        return {
+            "configured": False,
+            "code": "SEEDR_TOKEN_MISSING",
+            "message": "Seedr API token is not configured in Render.",
+        }
+
+    try:
+        payload = await seedr_request("/user")
+        data = seedr_data(payload)
+        return {
+            "configured": True,
+            "authenticated": True,
+            "code": "SEEDR_AUTH_OK",
+            "user": {
+                "id": data.get("id") if isinstance(data, dict) else None,
+                "email": None,
+                "plan": data.get("plan") if isinstance(data, dict) else None,
+            },
+        }
+    except SeedrError as exc:
+        return {
+            "configured": True,
+            "authenticated": False,
+            "code": exc.code,
+            "message": exc.detail,
+        }
 
 @app.get("/api/seedr/quota")
 async def seedr_quota():
