@@ -477,7 +477,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
               <div className="max-w-md rounded-xl bg-slate-900/95 border border-rose-500/30 p-5">
                 <p className="text-sm font-semibold text-rose-300">{mediaError}</p>
                 <p className="text-xs text-slate-400 mt-2">
-                  The VPS sends a browser-compatible fragmented MP4 stream.
+                  The Seedr HLS stream could not be loaded. The server now proxies the playlist and media segments to keep playback same-origin.
                 </p>
               </div>
             </div>
