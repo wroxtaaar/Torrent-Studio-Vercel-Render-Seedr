@@ -2410,7 +2410,7 @@ export default function App() {
                   </p>
                   {seedrConfigured && (
                     seedrQuota ? (
-                      <>                      <div className="hidden sm:grid mt-3 grid-cols-3 gap-2 max-w-xl">
+                      <>                      <div className="grid mt-3 grid-cols-3 gap-2 max-w-xl">
                         <div className="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2">
                           <div className="text-[10px] uppercase tracking-wide text-slate-500">Consumed</div>
                           <div className="text-sm font-bold text-slate-100 mt-0.5">{formatBytes(seedrQuota.usedSpace)}</div>
@@ -2449,25 +2449,7 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="sm:hidden mt-2.5 rounded-xl bg-slate-950/70 border border-slate-800/80 px-3 py-2.5">
-                        <div className="flex items-end justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-[10px] uppercase tracking-wide text-slate-500">Seedr storage</div>
-                            <div className="text-sm font-bold text-slate-100 mt-0.5">
-                              {formatQuotaBytes(seedrQuota.usedSpace)} <span className="text-slate-500 font-normal">/ {formatQuotaBytes(seedrQuota.maxSpace)}</span>
-                            </div>
-                          </div>
-                          <div className={`text-right shrink-0 text-xs font-bold ${seedrQuota.remainingSpace <= 0 ? 'text-rose-300' : seedrQuota.remainingSpace < 500 * 1024 * 1024 ? 'text-rose-300' : seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3 ? 'text-amber-300' : 'text-emerald-300'}`}>
-                            {formatQuotaBytes(seedrQuota.remainingSpace)} left
-                          </div>
-                        </div>
-                        <div className="mt-2 h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full transition-all ${seedrQuota.remainingSpace < 500 * 1024 * 1024 ? 'bg-rose-400' : seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3 ? 'bg-amber-400' : 'bg-emerald-400'}`}
-                            style={{ width: `${Math.max(0, Math.min(100, seedrQuota.maxSpace > 0 ? (seedrQuota.usedSpace / seedrQuota.maxSpace) * 100 : 0))}%` }}
-                          />
-                        </div>
-                      </div>
+
                     </>
                     ) : null
                   )}
