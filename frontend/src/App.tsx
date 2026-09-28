@@ -4,6 +4,7 @@
  * unlimited server storage, HTTP range streaming, and selective downloads.
  */
 
+// Deployment marker: frontend is deployed from main via Vercel.
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Cloud,
