@@ -1136,7 +1136,8 @@ export default function App() {
       'seedr',
       undefined,
       undefined,
-      torrentName
+      torrentName,
+      Number(resolvedMetadata?.totalSize || size || 0)
     );
   };
 
@@ -1149,7 +1150,8 @@ export default function App() {
     forceBackend?: 'seedr' | 'qbittorrent',
     selectedNames?: string[],
     seedrTaskId?: number | string,
-    torrentName?: string
+    torrentName?: string,
+    requiredBytes?: number
   ) => {
     try {
       if (seedrDownloadActive && forceBackend !== 'qbittorrent') {
@@ -1158,6 +1160,46 @@ export default function App() {
         );
         (error as any).code = 'SEEDR_PARALLEL_DOWNLOAD_LIMIT';
         throw error;
+      }
+
+      // Pre-check Seedr quota before creating the task. Seedr can reject an
+      // over-quota torrent with a provider-specific 413 reason, so relying
+      // only on the provider response made the warning inconsistent.
+      if (forceBackend !== 'qbittorrent') {
+        let required = Number(requiredBytes || 0);
+        if (!required && Array.isArray(manifest)) {
+          required = manifest
+            .filter(file => Number(file.priority || 0) > 0)
+            .reduce((sum, file) => sum + Math.max(0, Number(file.size || 0)), 0);
+        }
+
+        if (required > 0) {
+          try {
+            const quota = await api.getSeedrQuota();
+            setSeedrQuota({
+              maxSpace: quota.maxSpace,
+              usedSpace: quota.usedSpace,
+              remainingSpace: quota.remainingSpace,
+            });
+
+            if (quota.remainingSpace < required) {
+              setActiveTab('search');
+              setSeedrInsufficientSpacePrompt({
+                requiredBytes: required,
+                remainingBytes: quota.remainingSpace,
+                magnet,
+                category,
+                selectedFiles,
+                manifest,
+                existingHash,
+              });
+              return;
+            }
+          } catch {
+            // If quota lookup is temporarily unavailable, let Seedr make the
+            // authoritative decision below rather than blocking the add.
+          }
+        }
       }
 
       const result = await api.addMagnet(
@@ -1267,8 +1309,28 @@ export default function App() {
       setActiveTab(result.backend === 'seedr' ? 'files' : 'transfers');
     } catch (error: any) {
       if (error?.code === 'SEEDR_INSUFFICIENT_SPACE') {
-        const required = Number(error.requiredBytes || 0);
-        const remaining = Number(error.remainingSpace || 0);
+        let required = Number(error.requiredBytes || requiredBytes || 0);
+        if (!required && Array.isArray(manifest)) {
+          required = manifest
+            .filter(file => Number(file.priority || 0) > 0)
+            .reduce((sum, file) => sum + Math.max(0, Number(file.size || 0)), 0);
+        }
+
+        let remaining = Number(error.remainingSpace || 0);
+        if (!remaining) {
+          try {
+            const quota = await api.getSeedrQuota();
+            remaining = Number(quota.remainingSpace || 0);
+            setSeedrQuota({
+              maxSpace: Number(quota.maxSpace || 0),
+              usedSpace: Number(quota.usedSpace || 0),
+              remainingSpace: remaining,
+            });
+          } catch {
+            // Keep the provider error visible even if quota refresh fails.
+          }
+        }
+
         setActiveTab('search');
         setSeedrInsufficientSpacePrompt({
           requiredBytes: required,
