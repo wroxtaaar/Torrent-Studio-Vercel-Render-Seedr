@@ -2687,6 +2687,82 @@ async def apply_seedr_file_selection(
     }
 
 
+@app.post("/api/seedr/tasks/add-selected")
+async def seedr_add_selected(request: Request):
+    """Compatibility endpoint for the frontend multi-file Seedr selector.
+    
+    The actual Seedr task/selection implementation lives in seedr_add().
+    Keep this route as the stable JSON contract expected by the UI instead of
+    duplicating Seedr task creation and selection logic.
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "Seedr selected-file request must contain valid JSON.") from exc
+
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Seedr selected-file request body must be a JSON object.")
+
+    magnet = str(body.get("magnet") or "").strip()
+    raw_files = body.get("files")
+    selected_indexes = body.get("selectedIndexes")
+
+    if not magnet:
+        raise HTTPException(400, "A magnet link is required.")
+    if not isinstance(raw_files, list) or not raw_files:
+        raise HTTPException(400, "Torrent file metadata is required.")
+    if not isinstance(selected_indexes, list) or not selected_indexes:
+        raise HTTPException(400, "Select at least one file.")
+
+    normalized_manifest: list[dict[str, Any]] = []
+    for position, item in enumerate(raw_files):
+        if not isinstance(item, dict):
+            raise HTTPException(400, "Invalid torrent file metadata.")
+        try:
+            index = int(item.get("index", position))
+            size = int(float(item.get("size") or 0))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "Invalid torrent file metadata.") from exc
+        normalized_manifest.append({
+            "index": index,
+            "name": str(item.get("name") or f"File {index}"),
+            "size": max(0, size),
+            "priority": 1 if index in {int(v) for v in selected_indexes if str(v).strip().lstrip("-").isdigit()} else 0,
+        })
+
+    try:
+        normalized_selected = sorted({
+            int(value)
+            for value in selected_indexes
+        })
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "Invalid selected file index.") from exc
+
+    result = await seedr_add(
+        MagnetRequest(
+            magnet=magnet,
+            folder_id=body.get("folder_id"),
+            torrent_name=body.get("torrentName"),
+            size=sum(int(item["size"]) for item in normalized_manifest),
+            selected_indexes=normalized_selected,
+            manifest=normalized_manifest,
+        )
+    )
+
+    return {
+        "backend": "seedr",
+        "taskId": result.get("task_id") or result.get("id") or (result.get("task") or {}).get("id"),
+        "created": True,
+        "torrentName": result.get("torrent_name") or body.get("torrentName") or "",
+        "folderId": result.get("folder_id"),
+        "selectedIndexes": normalized_selected,
+        "selectedSize": result.get("selectedSize"),
+        "totalSize": result.get("totalSize"),
+        "writeAccepted": bool(result.get("selectionApplied")),
+        "writeError": result.get("selectionError"),
+        "task": result.get("task"),
+    }
+
 @app.post("/api/seedr/add")
 async def seedr_add(body: MagnetRequest):
     if not SEEDR_TOKEN:
