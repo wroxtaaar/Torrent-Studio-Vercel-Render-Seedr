@@ -365,8 +365,8 @@ export const api = {
     seedrTaskId?: number | string,
     torrentName?: string
   ): Promise<any> {
-    const magnet = urls.trim();
-    if (!magnet.toLowerCase().startsWith('magnet:?')) {
+    const magnet = urls;
+    if (!magnet.trim().toLowerCase().startsWith('magnet:?')) {
       throw new Error('A valid magnet URL is required');
     }
 
