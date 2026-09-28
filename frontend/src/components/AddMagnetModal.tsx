@@ -90,7 +90,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
 
-    const source = initialMagnet.trim();
+    const source = initialMagnet;
     setMagnetInput(source);
     setInspectedFiles([]);
     setInspectedHash('');
@@ -507,8 +507,8 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const magnet = magnetInput.trim();
-    if (!/^magnet:\?/i.test(magnet)) {
+    const magnet = magnetInput;
+    if (!/^magnet:\?/i.test(magnet.trim())) {
       setError('Please provide a magnet link.');
       return;
     }
