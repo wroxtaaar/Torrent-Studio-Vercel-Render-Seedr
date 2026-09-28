@@ -535,16 +535,64 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   };
 
   // Fullscreen
-  const toggleFullscreen = () => {
-    if (!containerRef.current) return;
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen?.();
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen?.();
-      setIsFullscreen(false);
+  const lockLandscape = async () => {
+    if (!isVideo) return;
+    try {
+      if (typeof screen !== 'undefined' && screen.orientation?.lock) {
+        await screen.orientation.lock('landscape');
+      }
+    } catch {
+      // Some Android browsers expose fullscreen but do not allow orientation
+      // locking. The fullscreen layout below still uses the real viewport.
     }
   };
+
+  const unlockOrientation = () => {
+    try {
+      if (typeof screen !== 'undefined' && screen.orientation?.unlock) {
+        screen.orientation.unlock();
+      }
+    } catch {
+      // Orientation unlock is not supported by every browser.
+    }
+  };
+
+  const toggleFullscreen = async () => {
+    if (!containerRef.current) return;
+
+    if (!document.fullscreenElement) {
+      try {
+        await containerRef.current.requestFullscreen?.();
+        setIsFullscreen(true);
+        await lockLandscape();
+      } catch {
+        setIsFullscreen(Boolean(document.fullscreenElement));
+      }
+    } else {
+      try {
+        await document.exitFullscreen?.();
+      } finally {
+        setIsFullscreen(false);
+        unlockOrientation();
+      }
+    }
+  };
+
+  // Keep React state synchronized with the browser's actual fullscreen state.
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const active = document.fullscreenElement === containerRef.current;
+      setIsFullscreen(active);
+      if (active) {
+        void lockLandscape();
+      } else {
+        unlockOrientation();
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, [isVideo]);
 
   // Copy Direct Stream URL
   const copyStreamUrl = () => {
@@ -711,7 +759,11 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-black/80 backdrop-blur-md">
       <div
         ref={containerRef}
-        className="relative w-full max-w-4xl bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh]"
+        className={`relative bg-slate-900 overflow-hidden flex flex-col ${
+          isFullscreen
+            ? 'w-screen h-screen max-w-none max-h-none rounded-none border-0'
+            : 'w-full max-w-4xl border border-slate-700/80 rounded-2xl shadow-2xl max-h-[95vh]'
+        }`}
       >
         {/* Top Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900/90 z-10">
@@ -770,7 +822,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         </div>
 
         {/* Media Viewport */}
-        <div className="relative flex-1 bg-black flex items-center justify-center min-h-[260px] md:min-h-[420px] overflow-hidden">
+        <div className={`relative flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden ${
+          isFullscreen ? 'min-h-0' : 'min-h-[260px] md:min-h-[420px]'
+        }`}>
           {mediaError && (
             <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center">
               <div className="max-w-md rounded-xl bg-slate-900/95 border border-rose-500/30 p-5">
@@ -803,7 +857,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
             <video
               ref={videoRef}
               autoPlay
-              className="w-full h-full max-h-[60vh] object-contain cursor-pointer"
+              className={`w-full h-full object-contain cursor-pointer ${
+                isFullscreen ? 'max-h-none' : 'max-h-[60vh]'
+              }`}
               onClick={togglePlay}
               onTimeUpdate={onTimeUpdate}
               onSeeking={onSeeking}
@@ -951,17 +1007,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
                     ))}
                   </select>
                 </label>
-              )}
-
-              {isVideo && (
-                <button
-                  onClick={openSubtitleSearch}
-                  className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 hover:bg-slate-700 transition"
-                  title="Download subtitles"
-                >
-                  <Download className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Download subtitles…</span>
-                </button>
               )}
 
               {subtitleTracks.length > 0 && (
