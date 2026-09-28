@@ -2612,7 +2612,7 @@ export default function App() {
                                 setSeedrFolderContentsLoading(false);
                                 setSeedrError(null);
                               }}
-                              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5"
+                              className="shrink-0 px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap"
                             >
                               ← Back to folders
                             </button>
@@ -2623,7 +2623,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => handleDownloadSeedrFolder(folder.folderId)}
-                              className="shrink-0 px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
+                              className="shrink-0 px-2 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition whitespace-nowrap"
                             >
                               Download ZIP
                             </button>
@@ -2667,27 +2667,28 @@ export default function App() {
                                       type="button"
                                       onClick={() => void handleStreamSeedrFile(file)}
                                       disabled={seedrStreamLoadingId === file.id}
-                                      className="px-2.5 py-1.5 rounded-lg bg-cyan-500 text-slate-950 font-bold text-xs hover:bg-cyan-400 transition disabled:opacity-60 disabled:cursor-wait flex items-center gap-1.5"
+                                      className="p-2 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs hover:bg-cyan-400 transition disabled:opacity-60 disabled:cursor-wait flex items-center justify-center gap-1.5 tap-target"
                                     >
                                       {seedrStreamLoadingId === file.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                                      {seedrStreamLoadingId === file.id ? 'Preparing…' : 'Stream'}
+                                      <span className="hidden sm:inline">{seedrStreamLoadingId === file.id ? 'Preparing…' : 'Stream'}</span>
                                     </button>
                                   )}
                                   <button
                                     type="button"
                                     onClick={() => handleDownloadSeedrFile(file.id, file.name)}
-                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
+                                    className="p-2 rounded-xl bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition flex items-center justify-center tap-target"
                                   >
-                                    Download
+                                    <Download className="w-4 h-4 sm:hidden" />
+                                    <span className="hidden sm:inline">Download</span>
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => void handleCopySeedrFileUrl(file.id)}
-                                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
+                                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition tap-target"
                                     title="Copy direct download URL"
                                   >
                                     <Copy className="w-3.5 h-3.5" />
-                                    {copiedSeedrFileId === file.id ? 'Copied' : 'Copy URL'}
+                                    <span className="hidden sm:inline">{copiedSeedrFileId === file.id ? 'Copied' : 'Copy URL'}</span>
                                   </button>
                                   <button
                                     type="button"
