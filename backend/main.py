@@ -858,14 +858,30 @@ async def legacy_seedr_request(
 
     if isinstance(data, dict):
         raw_error = str(data.get("error") or "").strip().lower()
+        error_detail = str(
+            data.get("error_description") or data.get("message") or data.get("error") or ""
+        ).strip()
+        normalized_error = error_detail.lower().replace("_", " ")
         if raw_error not in ("", "0"):
-            if "access_denied" in raw_error or "access denied" in raw_error:
+            if (
+                "not enough space" in normalized_error
+                or "insufficient space" in normalized_error
+                or "not enough storage" in normalized_error
+                or "storage full" in normalized_error
+                or normalized_error in {"not enough space", "insufficient space"}
+            ):
+                raise SeedrError(
+                    "SEEDR_INSUFFICIENT_SPACE",
+                    413,
+                    "Seedr does not have enough free space for this torrent.",
+                )
+            if "access_denied" in raw_error or "access denied" in normalized_error:
                 raise SeedrError(
                     "SEEDR_LIBRARY_ACCESS_DENIED",
                     403,
                     "Seedr denied this account operation.",
                 )
-            if "unauthor" in raw_error or "invalid token" in raw_error:
+            if "unauthor" in raw_error or "invalid token" in normalized_error:
                 raise SeedrError(
                     "SEEDR_TOKEN_REJECTED",
                     401,
@@ -877,7 +893,7 @@ async def legacy_seedr_request(
             raise SeedrError(
                 "SEEDR_API_ERROR",
                 502,
-                str(data.get("error_description") or data.get("message") or data.get("error")),
+                error_detail or "Seedr rejected the torrent.",
             )
 
     return data
