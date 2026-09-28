@@ -24,7 +24,7 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('SeedFlow Runtime Error caught by boundary:', error, errorInfo);
+    console.error('Torrent Studio Runtime Error caught by boundary:', error, errorInfo);
     this.setState({ errorInfo });
   }
 
@@ -56,7 +56,7 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
             boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)'
           }}>
             <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#38bdf8', marginBottom: '8px' }}>
-              SeedFlow Initialization Error
+              Torrent Studio Initialization Error
             </h2>
             <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '16px', lineHeight: 1.5 }}>
               An unexpected error occurred during rendering.
