@@ -387,28 +387,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     }
   };
 
-  useEffect(() => {
-    if (!isOpen || !initialMagnet.trim()) return;
 
-    // If the background resolver already produced a file list, reopening the
-    // selector must use that cached list instead of starting the background
-    // inspection again. Otherwise the "Open File Selection" action immediately
-    // closes/reopens the modal and puts it back into background mode.
-    if (inspectedFiles.length > 0 && inspectedHash) {
-      setMagnetInput(initialMagnet.trim());
-      setBackgroundMode(false);
-      setError('');
-      return;
-    }
-
-    const source = initialMagnet.trim();
-    setMagnetInput(source);
-    setInspectedFiles([]);
-    setInspectionSource('');
-    setError('');
-    // Keep the selector open while the chosen torrent metadata loads.
-    void triggerInspect(source, false);
-  }, [isOpen, initialMagnet, inspectedFiles.length, inspectedHash]);
 
   const handleInputChange = (val: string) => {
     setBackgroundMode(false);
@@ -720,8 +699,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                   setInspectedHash('');
                   setInspectedTorrentName('');
                   setError('');
-                  setInspectionSource('Resolving torrent metadata in My Cloud Files...');
-                  void triggerInspect(pasted, true);
+                  setInspectionSource('Ready to send directly to Seedr.');
                 }}
                 onChange={(e) => handleInputChange(e.target.value)}
                 placeholder="Paste magnet:?xt=urn:btih:... or torrent hash"
@@ -918,20 +896,10 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
             <button
               type="button"
               onClick={() => {
-                if (isDirectSeedrSource && inspectedFiles.length === 0) {
-                  void triggerInspect(magnetInput.trim(), false);
-                } else if (isDirectSeedrSource || selectedCount > 0) {
-                  void handleSubmit({ preventDefault: () => {} } as React.FormEvent);
-                } else if (magnetInput.trim() && !isInspecting) {
-                  void triggerInspect(magnetInput.trim());
-                } else if (!magnetInput.trim()) {
-                  setError('Paste a magnet link, torrent hash, or upload a .torrent file first.');
-                }
+                void handleSubmit({ preventDefault: () => {} } as React.FormEvent);
               }}
               disabled={
-                isLoading ||
-                isInspecting ||
-                (inspectedFiles.length > 0 && selectedCount === 0)
+                isLoading
               }
               className="flex-1 sm:flex-none px-4 sm:px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-cyan-500/20"
             >
@@ -941,19 +909,7 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
                 <FolderDown className="w-4 h-4" />
               )}
               <span>
-                {isLoading
-                  ? 'Adding Task...'
-                  : isSingleFile && selectedCount > 0
-                  ? 'Download Selected File'
-                  : selectedCount > 0
-                  ? `Download ${selectedCount} Selected File(s)`
-                  : isInspecting
-                  ? 'Loading File List...'
-                  : !magnetInput.trim()
-                  ? 'Paste Magnet First'
-                  : inspectedFiles.length === 0
-                  ? 'Load File List'
-                  : 'Select Files to Continue'}
+                {isLoading ? 'Sending to Seedr...' : 'Send Magnet to Seedr'}
               </span>
             </button>
           </div>
@@ -962,3 +918,4 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
     </div>
   );
 };
+
