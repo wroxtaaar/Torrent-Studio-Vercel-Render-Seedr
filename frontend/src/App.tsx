@@ -247,8 +247,7 @@ export default function App() {
       const raw = window.localStorage.getItem(seedrNoticeStorageKey);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
-      if (!parsed || parsed.taskId == null) return null;      return {
-        taskId: parsed.taskId,
+      if (!parsed || parsed.taskId == null) return null;      return {        taskId: parsed.taskId,
         name: String(parsed.name || 'Seedr download'),
         folderName: String(parsed.folderName || ''),
         folderId: String(parsed.folderId || ''),
@@ -497,8 +496,7 @@ export default function App() {
     }
   }, [selectedSeedrFolderId, seedrLibraryFolders.length, seedrFolderGroups]);
   // File Explorer State
-  const [currentFolder, setCurrentFolder] = useState<string>('/');
-  const [fileSearch, setFileSearch] = useState<string>('');
+  const [currentFolder, setCurrentFolder] = useState<string>('/');  const [fileSearch, setFileSearch] = useState<string>('');
   const [fileTypeFilter, setFileTypeFilter] = useState<string>('all');
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
 
@@ -747,8 +745,7 @@ export default function App() {
           return;
         }        setSeedrQuotaError(null);
         setSeedrQuota({
-          maxSpace: quota.maxSpace,
-          usedSpace: quota.usedSpace,
+          maxSpace: quota.maxSpace,          usedSpace: quota.usedSpace,
           remainingSpace: quota.remainingSpace,
         });
       }).catch((error: any) => {
@@ -997,8 +994,7 @@ export default function App() {
         const torrentList = await api.getTorrents();        if (!isMounted) return;
 
         // Check for completions to fire push notifications
-        torrentList.forEach(t => {
-          const prevState = prevTorrentStates.current[t.hash];
+        torrentList.forEach(t => {          const prevState = prevTorrentStates.current[t.hash];
           if (prevState === 'downloading' && (t.state === 'completed' || t.progress >= 1)) {
             // Transfer finished! Trigger sound and push alert
             playNotificationSound();
@@ -1247,8 +1243,7 @@ export default function App() {
             .filter(({ file }) => Number(file.priority || 0) > 0)
             .map(({ file, index }) => ({
               id: `pending-${result.seedrTaskId ?? 'task'}-${index}`,
-              name: file.name,
-              size: Number(file.size || 0),
+              name: file.name,              size: Number(file.size || 0),
               folderId: '__pending__',
               folderPath: '/Currently Downloading',
               url: null,
@@ -1497,7 +1492,6 @@ export default function App() {
           seedrNotice.folderId ||
           ''
         ).trim();
-
         const completedTorrentName = String(
           seedrNotice.name ||
           (result as any).name ||
@@ -1747,8 +1741,7 @@ export default function App() {
       )
     );
 
-    try {
-      await api.pauseTorrent(hash);
+    try {      await api.pauseTorrent(hash);
     } catch (error) {
       delete pendingTransferStates.current[hash];
       console.error('Failed to pause torrent:', error);
@@ -1997,8 +1990,7 @@ export default function App() {
     }
   };
 
-  const handleDeleteSeedrFile = async (file: { id: string; name: string; size: number; folderId: string; folderPath: string }) => {
-    setSeedrDeleteNotice('Deleting…');
+  const handleDeleteSeedrFile = async (file: { id: string; name: string; size: number; folderId: string; folderPath: string }) => {    setSeedrDeleteNotice('Deleting…');
     try {
       // A single-file Seedr folder is represented directly in My Cloud Files.
       // In that special case, delete the whole Seedr folder rather than only
@@ -2247,8 +2239,7 @@ export default function App() {
 
       {/* Desktop Subheader Navigation Tabs */}
       <div className="hidden md:block bg-slate-900/60 border-b border-slate-800/80 px-6">
-        <div className="max-w-7xl mx-auto flex items-center gap-2 py-2">
-          <button
+        <div className="max-w-7xl mx-auto flex items-center gap-2 py-2">          <button
             onClick={() => setActiveTab('search')}
             className={activeTab === 'search'
               ? 'px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
@@ -2447,8 +2438,8 @@ export default function App() {
                             style={{ width: `${Math.max(0, Math.min(100, seedrQuota.maxSpace > 0 ? (seedrQuota.usedSpace / seedrQuota.maxSpace) * 100 : 0))}%` }}
                           />
                         </div>
-    
-                    </>                  </div>
+                      </div>
+                    </>
                     ) : null
                   )}
                 </div>
@@ -2497,8 +2488,7 @@ export default function App() {
                   {selectedSeedrFolderId === null ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
                       {seedrFolderGroups.map(folder => {
-                        // Seedr always stores a torrent as a folder. Keep the
-                        // top-level library consistent even when the folder has
+                        // Seedr always stores a torrent as a folder. Keep the                        // top-level library consistent even when the folder has
                         // only one file; open it to access file actions.
                         return (
                           <div
@@ -2747,8 +2737,7 @@ export default function App() {
                     {visibleFolders
                       .map((folder) => (
                         <button
-                          key={folder.id}
-                          type="button"
+                          key={folder.id}                          type="button"
                           onClick={() => setCurrentFolder(folder.path)}
                           className="w-full p-3.5 rounded-2xl bg-slate-900 border border-slate-800 hover:border-cyan-500/40 hover:bg-slate-900/80 transition shadow-sm flex items-center gap-3 text-left group"
                         >
@@ -2997,8 +2986,7 @@ export default function App() {
 
                     <div className="flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-slate-800/60">
                       <span>{folder.filesCount || 0} files ({formatBytes(folder.totalSize || 0)})</span>
-                      <span className="text-cyan-400 font-medium capitalize">Role: {userPerm}</span>
-                    </div>
+                      <span className="text-cyan-400 font-medium capitalize">Role: {userPerm}</span>                    </div>
 
                     <div className="flex items-center gap-2 pt-1">
                       <button
@@ -3247,8 +3235,7 @@ export default function App() {
 
       <MoveFileModal
         file={moveFile}
-        folders={folders}
-        onClose={() => setMoveFile(null)}
+        folders={folders}        onClose={() => setMoveFile(null)}
         onMove={handleMoveFile}
       />
 
