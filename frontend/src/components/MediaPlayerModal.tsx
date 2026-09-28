@@ -403,6 +403,22 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     }
   };
 
+  // Keep React state synchronized with the browser's actual fullscreen state.
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const active = document.fullscreenElement === containerRef.current;
+      setIsFullscreen(active);
+      if (active) {
+        void lockLandscape();
+      } else {
+        unlockOrientation();
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, [isVideo]);
+
   if (!file) return null;
 
   const handleMediaError = () => {
@@ -577,22 +593,6 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
       }
     }
   };
-
-  // Keep React state synchronized with the browser's actual fullscreen state.
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      const active = document.fullscreenElement === containerRef.current;
-      setIsFullscreen(active);
-      if (active) {
-        void lockLandscape();
-      } else {
-        unlockOrientation();
-      }
-    };
-
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, [isVideo]);
 
   // Copy Direct Stream URL
   const copyStreamUrl = () => {
