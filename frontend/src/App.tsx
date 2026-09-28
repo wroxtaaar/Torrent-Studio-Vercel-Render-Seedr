@@ -2313,7 +2313,6 @@ export default function App() {
                             {formatQuotaBytes(seedrQuota.remainingSpace)}
                           </div>
                         </div>
-                        </div>
                         <div className="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2">
                           <div className="text-[10px] uppercase tracking-wide text-slate-500">Total</div>
                           <div className="text-sm font-bold text-slate-100 mt-0.5">{formatBytes(seedrQuota.maxSpace)}</div>
