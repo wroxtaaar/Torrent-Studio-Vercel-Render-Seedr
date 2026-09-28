@@ -527,92 +527,38 @@ export const AddMagnetModal: React.FC<AddMagnetModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!magnetInput.trim()) {
-      setError('Please provide a magnet link or hash.');
+
+    const magnet = magnetInput.trim();
+    if (!/^magnet:\?/i.test(magnet)) {
+      setError('Please provide a magnet link.');
       return;
     }
-
-    // Resolve metadata before sending anything to Seedr. This keeps the
-    // selection decision local to Torrent Studio and avoids creating a Seedr
-    // task before the user has chosen the files.
-    if (isDirectSeedrSource && inspectedFiles.length === 0) {
-      await triggerInspect(magnetInput.trim(), false);
-      return;
-    }
-
-
-    if (isInspecting) {
-      setError('Please wait while the torrent file list is being loaded.');
-      return;
-    }
-
-    if (inspectedFiles.length === 0) {
-      setError('Please wait for the torrent file list to load before starting the download.');
-      return;
-    }
-
-    if (selectedCount === 0) {
-      setError('Please select at least 1 file to download from this torrent.');
-      return;
-    }
-
-    const selectedFileIndexes = inspectedFiles.filter(f => f.selected).map(f => f.index);
-    const manifest = inspectedFiles.map(f => ({
-      index: f.index,
-      name: f.name,
-      size: f.size,
-      priority: f.selected ? 1 : 0
-    }));
 
     try {
       setIsLoading(true);
       setError('');
-      // Seedr selection is based on the files the user actually selected.
-      // The metadata was resolved before this point, so Seedr has not started
-      // the torrent yet. If the selected bytes fit in the free space, send the
-      // manifest to the Seedr selective-task endpoint. qBittorrent remains the
-      // fallback only when quota cannot be read.
-      let selectedBackend: 'seedr' | 'qbittorrent' = 'qbittorrent';
-      try {
-        const quota = await api.getSeedrQuota();
-        if (
-          quota.configured &&
-          totalSelectedSize > 0 &&
-          totalSelectedSize <= quota.remainingSpace
-        ) {
-          selectedBackend = 'seedr';
-        }
-      } catch {
-        // Keep qBittorrent as the safe fallback when Seedr quota is unavailable.
-      }
 
-      let downloadSource =
-        selectedBackend === 'seedr' &&
-        inspectedHash &&
-        /^[a-f0-9]{40}$/i.test(inspectedHash)
-          ? `magnet:?xt=urn:btih:${inspectedHash.toLowerCase()}`
-          : magnetInput.trim();
-
-
+      // Direct Seedr path: send only the magnet link. No metadata lookup,
+      // quota lookup, file manifest, file selection, or Seedr selection API.
       await onAdd(
-        downloadSource,
+        magnet,
         category,
-        selectedFileIndexes,
-        manifest,
-        inspectedHash || undefined,
-        selectedBackend,
         undefined,
         undefined,
-        inspectedTorrentName
+        undefined,
+        'seedr'
       );
+
       setBackgroundMode(false);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to start cloud torrent download');
+      setError(err?.message || 'Failed to send the magnet to Seedr');
     } finally {
       setIsLoading(false);
     }
   };
+
+;
 
   if (!isOpen && !backgroundMode) return null;
 
