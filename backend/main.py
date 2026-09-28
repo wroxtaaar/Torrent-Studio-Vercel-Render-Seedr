@@ -1278,87 +1278,21 @@ async def rename_seedr_folder(folder_id: str, name: str) -> bool:
     return False
 
 
-async def seedr_resource_request(func: str, data: dict[str, Any]) -> Any:
-    """Call Seedr's legacy resource.php API used by seedrcc for all-user operations."""
-    if not SEEDR_TOKEN:
-        raise SeedrError(
-            "SEEDR_TOKEN_MISSING",
-            503,
-            "Seedr API token is not configured. Set SEEDR_API_TOKEN in Render.",
-        )
-
-    token = normalize_seedr_token(SEEDR_TOKEN)
-    if not token:
-        raise SeedrError(
-            "SEEDR_TOKEN_INVALID",
-            503,
-            "Seedr API token is empty or invalid.",
-        )
-
-    url = "https://www.seedr.cc/oauth_test/resource.php"
-    params = {
-        "access_token": token,
-        "func": str(func),
-    }
-
-    async with httpx.AsyncClient(timeout=35, follow_redirects=True) as client:
-        response = await client.post(
-            url,
-            params=params,
-            data={key: value for key, value in data.items() if value is not None},
-            headers={"Accept": "application/json"},
-        )
-        raw = response.text
-        try:
-            result = response.json() if raw else None
-        except Exception:
-            result = raw
-
-    if response.status_code >= 400:
-        detail = result.get("error") if isinstance(result, dict) else str(result or raw)
-        raise SeedrError(
-            "SEEDR_API_ERROR",
-            response.status_code,
-            f"Seedr add_torrent failed (HTTP {response.status_code}): {detail}",
-        )
-
-    if isinstance(result, dict) and result.get("error"):
-        error = str(result.get("error") or "").strip()
-        error_type = str(result.get("error_type") or result.get("errorType") or "").strip()
-        reason = error_type or error
-        if result.get("error") == "expired_token":
-            raise SeedrError(
-                "SEEDR_TOKEN_EXPIRED",
-                401,
-                "The Seedr access token has expired. Generate a new 6-hour token.",
-            )
-        if "not_enough_space" in reason.lower() or "space" in reason.lower():
-            raise SeedrError(
-                "SEEDR_QUOTA_UNAVAILABLE",
-                413,
-                "Seedr reports insufficient storage space for this operation.",
-            )
-        raise SeedrError(
-            "SEEDR_API_ERROR",
-            422,
-            f"Seedr add_torrent failed: {reason}",
-        )
-
-    return result
-
-
 async def add_task(magnet: str, folder_id: int) -> dict[str, Any]:
     normalized = normalize_magnet(magnet)
-    # Use the same all-user Seedr API contract as hemantapkh/seedrcc:
-    # POST /oauth_test/resource.php?func=add_torrent&access_token=... with
-    # form fields torrent_magnet, wishlist_id, and folder_id.
-    result = await seedr_resource_request(
-        "add_torrent",
-        {
-            "torrent_magnet": normalized,
-            "wishlist_id": None,
-            "folder_id": str(int(folder_id)),
-        },
+    # Seedr's API Console documents POST /tasks under the primary API base
+    # with a Personal Access Token and JSON body containing torrent_magnet
+    # and folder_id.
+    result = seedr_data(
+        await seedr_request(
+            "/tasks",
+            "POST",
+            {
+                "torrent_magnet": normalized,
+                "folder_id": int(folder_id),
+            },
+            base_url=SEEDR_BASE,
+        )
     )
     if not isinstance(result, dict):
         raise HTTPException(502, "Seedr did not return a valid task response")
