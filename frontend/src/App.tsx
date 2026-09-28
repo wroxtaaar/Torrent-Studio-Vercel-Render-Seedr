@@ -247,8 +247,7 @@ export default function App() {
       const raw = window.localStorage.getItem(seedrNoticeStorageKey);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
-      if (!parsed || parsed.taskId == null) return null;
-      return {
+      if (!parsed || parsed.taskId == null) return null;      return {
         taskId: parsed.taskId,
         name: String(parsed.name || 'Seedr download'),
         folderName: String(parsed.folderName || ''),
@@ -497,7 +496,6 @@ export default function App() {
       setSeedrFiles([]);
     }
   }, [selectedSeedrFolderId, seedrLibraryFolders.length, seedrFolderGroups]);
-
   // File Explorer State
   const [currentFolder, setCurrentFolder] = useState<string>('/');
   const [fileSearch, setFileSearch] = useState<string>('');
@@ -747,8 +745,7 @@ export default function App() {
         if (!quota.configured) {
           setSeedrQuotaError('SEEDR_TOKEN_MISSING: Seedr API token is not configured in Render.');
           return;
-        }
-        setSeedrQuotaError(null);
+        }        setSeedrQuotaError(null);
         setSeedrQuota({
           maxSpace: quota.maxSpace,
           usedSpace: quota.usedSpace,
@@ -997,8 +994,7 @@ export default function App() {
 
     const pollTorrents = async () => {
       try {
-        const torrentList = await api.getTorrents();
-        if (!isMounted) return;
+        const torrentList = await api.getTorrents();        if (!isMounted) return;
 
         // Check for completions to fire push notifications
         torrentList.forEach(t => {
@@ -1247,8 +1243,7 @@ export default function App() {
           // Only the files selected in the manifest are represented in the
           // pending UI. The backend applies the Seedr unwanted-file bitmap
           // immediately after creating the task; no pause/resume is used.
-          files: (manifest || [])
-            .map((file, index) => ({ file, index }))
+          files: (manifest || [])            .map((file, index) => ({ file, index }))
             .filter(({ file }) => Number(file.priority || 0) > 0)
             .map(({ file, index }) => ({
               id: `pending-${result.seedrTaskId ?? 'task'}-${index}`,
@@ -1497,8 +1492,7 @@ export default function App() {
         const completedFolderId = String(
           (result as any).folderId ||
           (Array.isArray((result as any).files)
-            ? (result as any).files.find((file: any) => String(file?.folderId || '').trim())?.folderId
-            : '') ||
+            ? (result as any).files.find((file: any) => String(file?.folderId || '').trim())?.folderId            : '') ||
           progressResult.folderId ||
           seedrNotice.folderId ||
           ''
@@ -1747,8 +1741,7 @@ export default function App() {
     };
 
     setTorrents(prev =>
-      prev.map(t =>
-        t.hash === hash
+      prev.map(t =>        t.hash === hash
           ? { ...t, state: 'pausedDL', dlspeed: 0, eta: -1 }
           : t
       )
@@ -1997,8 +1990,7 @@ export default function App() {
 
       setActiveMediaFile(syntheticFile);
       setIsPlayerMinimized(false);
-    } catch (error) {
-      console.error('Failed to create Seedr stream URL:', error);
+    } catch (error) {      console.error('Failed to create Seedr stream URL:', error);
       setSeedrError(error instanceof Error ? error.message : 'Failed to create Seedr stream URL');
     } finally {
       setSeedrStreamLoadingId(current => current === file.id ? null : current);
@@ -2247,8 +2239,7 @@ export default function App() {
               className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 transition tap-target hidden sm:flex items-center justify-center border border-slate-800"
               title={`Theme: ${theme}`}
             >
-              {theme === 'light' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-cyan-400" />}
-            </button>
+              {theme === 'light' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-cyan-400" />}            </button>
 
           </div>
         </div>
@@ -2398,8 +2389,8 @@ export default function App() {
                     Files already downloaded to your Seedr account stay visible here, even after refreshing Torrent Studio.
                   </p>
                   {seedrConfigured && (
-                    seedrQuota ? (\n                      <>
-                      <div className="hidden sm:grid mt-3 grid-cols-3 gap-2 max-w-xl">
+                    seedrQuota ? (
+                      <>                      <div className="hidden sm:grid mt-3 grid-cols-3 gap-2 max-w-xl">
                         <div className="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2">
                           <div className="text-[10px] uppercase tracking-wide text-slate-500">Consumed</div>
                           <div className="text-sm font-bold text-slate-100 mt-0.5">{formatBytes(seedrQuota.usedSpace)}</div>
@@ -2456,8 +2447,9 @@ export default function App() {
                             style={{ width: `${Math.max(0, Math.min(100, seedrQuota.maxSpace > 0 ? (seedrQuota.usedSpace / seedrQuota.maxSpace) * 100 : 0))}%` }}
                           />
                         </div>
-                      </div>
-                      </>                    ) : null
+    
+                    </>                  </div>
+                    ) : null
                   )}
                 </div>
                 <button
@@ -2497,8 +2489,7 @@ export default function App() {
 
               {!seedrLoading && !seedrError && seedrConfigured && (seedrLibraryRoot?.filesCount || 0) === 0 && seedrLibraryFolders.length === 0 && !(seedrNotice?.taskId != null && seedrNotice.status !== 'completed') && (
                 <div className="mt-3 rounded-xl bg-slate-900/70 border border-slate-800 px-3 py-3 text-xs text-slate-400">
-                  No completed files are currently visible in your Seedr library.
-                </div>
+                  No completed files are currently visible in your Seedr library.                </div>
               )}
 
               {seedrConfigured && (
@@ -2747,8 +2738,7 @@ export default function App() {
                       {t}
                     </button>
                   ))}
-                </div>
-              </div>
+                </div>              </div>
             </div>
 
             {/* Folders and Files */}
@@ -2997,4 +2987,288 @@ export default function App() {
 
                       <span
                         className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
-                          folder.isShared
+                          folder.isShared                            ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {folder.isShared ? 'Shared' : 'Private'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-slate-800/60">
+                      <span>{folder.filesCount || 0} files ({formatBytes(folder.totalSize || 0)})</span>
+                      <span className="text-cyan-400 font-medium capitalize">Role: {userPerm}</span>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={() => {
+                          setCurrentFolder(folder.path);
+                          setActiveTab('files');
+                        }}
+                        className="flex-1 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition"
+                      >
+                        Open Folder
+                      </button>
+
+                      <button
+                        onClick={() => setShareFolder(folder)}
+                        className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-400 transition"
+                        title="Manage Permissions"
+                      >
+                        <Share2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: ACTIVITY LOG */}
+        {activeTab === 'activity' && (
+          <ActivityLogView
+            logs={activityLogs}
+            onClearLogs={async () => {
+              await api.clearLogs();
+              try { window.localStorage.removeItem(activityStorageKey); } catch {}
+              setActivityLogs([]);
+            }}
+            onRefresh={async () => {
+              const logs = await api.getLogs();
+              setActivityLogs(logs);
+            }}
+          />
+        )}
+
+        {/* TAB 5: STORAGE & AUTO-CLEANUP */}
+        {activeTab === 'storage' && storageStats && cleanupSettings && (
+          <div className="space-y-4">
+            <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              {/* Storage Cards Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+                <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Used Storage</p>
+                <p className="text-xl font-bold font-mono text-cyan-400 mt-1">{formatBytes(storageStats.usedBytes)}</p>
+                <p className="text-[11px] text-slate-500 mt-1">{Number(storageStats.usedPercentage || 0).toFixed(2)}% of total server capacity</p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+                <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Available Free Space</p>
+                <p className="text-xl font-bold font-mono text-emerald-400 mt-1">{formatBytes(storageStats.freeBytes)}</p>
+                <p className="text-[11px] text-slate-500 mt-1">Ready for high-bandwidth downloads</p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+                <p className="text-xs text-slate-400 uppercase font-semibold tracking-wider">Total Server Disk</p>
+                <p className="text-xl font-bold font-mono text-slate-100 mt-1">{formatBytes(storageStats.totalBytes)}</p>
+                
+              </div>
+            </div>
+          </div>
+          </div>
+        )}
+      </main>
+
+      {/* Floating Bottom Media Player (when minimized or active) */}
+      <MediaPlayerModal
+        file={activeMediaFile}
+        onClose={() => {
+          setActiveMediaFile(null);
+          setSeedrStreamLoadingId(null);
+        }}
+        onPlaybackStarted={() => {
+          // Stage 1 and stage 2 both end only when the browser actually
+          // starts playback. A fast stream therefore removes the spinner
+          // immediately, while a slow stream keeps it visible.
+          setSeedrStreamLoadingId(null);
+        }}
+        isMinimized={isPlayerMinimized}
+        onToggleMinimize={() => setIsPlayerMinimized(!isPlayerMinimized)}
+      />
+
+      {/* Mobile Floating Action Button (FAB) for Add Magnet */}
+      <button
+        onClick={() => openAddMagnet()}
+        className="md:hidden fixed right-3 bottom-[4.6rem] z-30 w-12 h-12 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-xl shadow-cyan-500/30 flex items-center justify-center font-bold"
+        title="Add Magnet Link"
+      >
+        <Plus className="w-5 h-5 stroke-[2.5]" />
+      </button>
+
+      {/* Mobile More actions sheet */}
+      {isMobileMoreOpen && (
+        <>
+          <button
+            type="button"
+            aria-label="Close more menu"
+            onClick={() => setIsMobileMoreOpen(false)}
+            className="md:hidden fixed inset-0 z-40 bg-black/50 backdrop-blur-[1px]"
+          />
+          <div className="md:hidden fixed left-3 right-3 bottom-20 z-50 rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl p-3">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => { setActiveTab('activity'); setIsMobileMoreOpen(false); }}
+                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
+              >
+                <History className="w-4 h-4 text-cyan-400" />
+                Activity Log
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { setActiveTab('storage'); setIsMobileMoreOpen(false); }}
+                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
+              >
+                <Sparkles className="w-4 h-4 text-cyan-400" />
+                Storage
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setTheme(theme === 'dark' ? 'dim' : theme === 'dim' ? 'light' : 'dark');
+                }}
+                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
+              >
+                {theme === 'light'
+                  ? <Sun className="w-4 h-4 text-amber-400" />
+                  : <Moon className="w-4 h-4 text-cyan-400" />}
+                Theme: {theme}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Mobile Bottom Navigation */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-950/95 backdrop-blur-xl border-t border-slate-800 px-1 pb-[calc(env(safe-area-inset-bottom)+2px)] pt-1">
+        <div className="grid grid-cols-4 items-center">
+          <button
+            onClick={() => { setActiveTab('search'); setIsMobileMoreOpen(false); }}
+            className={`flex flex-col items-center justify-center gap-0.5 min-h-11 px-1 rounded-lg transition ${activeTab === 'search' ? 'text-cyan-400' : 'text-slate-400'}`}
+          >
+            <Search className="w-[18px] h-[18px]" />
+            <span className="text-[9px] font-semibold">Search</span>
+          </button>
+
+          <button
+            onClick={() => { setActiveTab('files'); setIsMobileMoreOpen(false); }}
+            className={`flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${activeTab === 'files' ? 'text-cyan-400' : 'text-slate-400'}`}
+          >
+            <Folder className="w-5 h-5" />
+            <span className="text-[9px] font-semibold">Files</span>
+          </button>
+
+          <button
+            onClick={() => setIsMobileMoreOpen(prev => !prev)}
+            className={`flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${isMobileMoreOpen || activeTab === 'activity' || activeTab === 'storage' ? 'text-cyan-400' : 'text-slate-400'}`}
+          >
+            <Layers className="w-5 h-5" />
+            <span className="text-[9px] font-semibold">More</span>
+          </button>
+        </div>
+      </nav>
+
+      {/* Modals */}
+      <AddMagnetModal
+        isOpen={isAddMagnetOpen}
+        onClose={() => {
+          setIsAddMagnetOpen(false);
+          setInitialMagnet('');
+          setInitialSourceUrl('');
+          setInitialDescriptorUrl('');
+        }}
+        onOpen={() => {
+          openAddMagnet(initialMagnet);
+        }}
+        onAdd={handleAddMagnet}
+        onBackgroundChange={(state) => {
+          setBackgroundMetadataJob(state);
+          if (state.active) {
+            setActiveTab('files');
+            setIsAddMagnetOpen(false);
+          }
+        }}
+        defaultFolder={currentFolder === '/' ? 'Downloads' : currentFolder.replace('/', '')}
+        initialMagnet={initialMagnet}
+        initialSourceUrl={initialSourceUrl}
+        initialDescriptorUrl={initialDescriptorUrl}
+      />
+
+      <FilePrioModal
+        torrent={prioTorrent}
+        onClose={() => setPrioTorrent(null)}
+        onUpdatePriority={handleUpdateFilePriority}
+      />
+
+      <StorageCleanupModal
+        isOpen={isCleanupOpen}
+        onClose={() => setIsCleanupOpen(false)}
+        stats={storageStats}
+        settings={cleanupSettings}
+        onUpdateSettings={async (settings) => {
+          const updated = await api.updateCleanupSettings(settings);
+          setCleanupSettings(updated);
+        }}
+        onRunCleanup={handleRunCleanup}
+      />
+
+      <FolderShareModal
+        folder={shareFolder}
+        users={users}
+        onClose={() => setShareFolder(null)}
+        onSave={handleFolderShareSave}
+      />
+
+      <NotificationCenter
+        notifications={notifications}
+        isOpen={isNotificationsOpen}
+        onClose={() => setIsNotificationsOpen(false)}
+        onMarkRead={async () => {
+          await api.markNotificationsRead();
+          setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+        }}
+        onTestPush={async () => {
+          await api.testNotification();
+          dispatchBrowserNotification('SeedFlow Push Notification Test', 'Push alert successfully triggered! Everything is running smoothly.');
+          const notifs = await api.getNotifications();
+          setNotifications(notifs);
+        }}      />
+
+      <CreateFolderModal
+        isOpen={isCreateFolderOpen}
+        onClose={() => setIsCreateFolderOpen(false)}
+        onCreate={handleCreateFolder}
+        currentPath={currentFolder}
+      />
+
+      <MoveFileModal
+        file={moveFile}
+        folders={folders}
+        onClose={() => setMoveFile(null)}
+        onMove={handleMoveFile}
+      />
+
+      <RenameModal
+        item={renameItem}
+        onClose={() => setRenameItem(null)}
+        onRename={handleRename}
+      />
+
+      {deleteTarget && (
+        <ConfirmDeleteModal
+          isOpen={Boolean(deleteTarget)}
+          title={deleteTarget.type === 'file' ? 'Delete File' : 'Remove Torrent Task'}
+          itemName={deleteTarget.name}
+          itemDetails={deleteTarget.details}
+          itemType={deleteTarget.type}
+          onConfirm={handleConfirmDelete}
+          onClose={() => setDeleteTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
