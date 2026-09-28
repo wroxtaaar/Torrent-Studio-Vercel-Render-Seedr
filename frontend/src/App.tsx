@@ -2398,7 +2398,7 @@ export default function App() {
                     Files already downloaded to your Seedr account stay visible here, even after refreshing Torrent Studio.
                   </p>
                   {seedrConfigured && (
-                    seedrQuota ? (
+                    seedrQuota ? (\n                      <>
                       <div className="hidden sm:grid mt-3 grid-cols-3 gap-2 max-w-xl">
                         <div className="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2">
                           <div className="text-[10px] uppercase tracking-wide text-slate-500">Consumed</div>
@@ -2457,7 +2457,7 @@ export default function App() {
                           />
                         </div>
                       </div>
-                    ) : null
+                      </>                    ) : null
                   )}
                 </div>
                 <button
