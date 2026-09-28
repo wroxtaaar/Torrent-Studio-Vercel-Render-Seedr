@@ -2287,25 +2287,32 @@ export default function App() {
                         </div>
                         <div
                           className={`rounded-lg px-3 py-2 border transition-all duration-300 ${
-                            seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3
-                              ? 'border-amber-400/60 bg-amber-400/10 ring-1 ring-amber-400/25 shadow-[0_0_18px_rgba(251,191,36,0.18)]'
-                              : 'bg-slate-900/80 border-slate-800'
+                            seedrQuota.remainingSpace > 0 && seedrQuota.remainingSpace < 500 * 1024 * 1024
+                              ? 'border-rose-400/70 bg-rose-400/10 ring-1 ring-rose-400/30 shadow-[0_0_18px_rgba(244,63,94,0.24)]'
+                              : seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3
+                                ? 'border-amber-400/60 bg-amber-400/10 ring-1 ring-amber-400/25 shadow-[0_0_18px_rgba(251,191,36,0.18)]'
+                                : 'bg-slate-900/80 border-slate-800'
                           }`}
                         >
                           <div className={`text-[10px] uppercase tracking-wide ${
-                            seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3
-                              ? 'text-amber-300'
-                              : 'text-slate-500'
+                            seedrQuota.remainingSpace > 0 && seedrQuota.remainingSpace < 500 * 1024 * 1024
+                              ? 'text-rose-300'
+                              : seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3
+                                ? 'text-amber-300'
+                                : 'text-slate-500'
                           }`}>Remaining</div>
                           <div className={`text-sm font-bold mt-0.5 ${
                             seedrQuota.remainingSpace <= 0
                               ? 'text-rose-300'
-                              : seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3
-                                ? 'text-amber-300'
-                                : 'text-emerald-300'
+                              : seedrQuota.remainingSpace < 500 * 1024 * 1024
+                                ? 'text-rose-300'
+                                : seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3
+                                  ? 'text-amber-300'
+                                  : 'text-emerald-300'
                           }`}>
                             {formatQuotaBytes(seedrQuota.remainingSpace)}
                           </div>
+                        </div>
                         </div>
                         <div className="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2">
                           <div className="text-[10px] uppercase tracking-wide text-slate-500">Total</div>
