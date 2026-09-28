@@ -251,19 +251,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
   }, [results, minSeeders, sortBy, sortDirection]);
 
   return (
-    <div className="space-y-4">
-      <div className="p-4 sm:p-5 rounded-2xl bg-slate-900 border border-slate-800">
+    <div className="space-y-2.5 sm:space-y-4">
+      <div className="p-2.5 sm:p-5 rounded-xl sm:rounded-2xl bg-slate-900 border border-slate-800">
         <div className="flex flex-col gap-1">
           <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
             <Search className="w-5 h-5 text-cyan-400" />
             Search Torrents
           </h2>
-          <p className="text-xs text-slate-400">
+          <p className="hidden sm:block text-xs text-slate-400">
             Search cached torrent indexes for movies and TV. Search works independently of the Render backend.
           </p>
         </div>
 
-        <form data-torrent-search="true" onSubmit={runSearch} className="mt-4 flex flex-col sm:flex-row gap-2">
+        <form data-torrent-search="true" onSubmit={runSearch} className="mt-2.5 sm:mt-4 flex flex-row gap-1.5 sm:gap-2">
           <div ref={recentSearchRef} className="relative flex-1">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
@@ -277,7 +277,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
                 if (recentSearches.length > 0) setShowRecentSearches(true);
               }}
               placeholder="Search movies, TV, music, software..."
-              className="w-full pl-9 pr-10 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/20"
+              className="w-full pl-9 pr-10 py-2 sm:py-2.5 rounded-lg sm:rounded-xl bg-slate-950 border border-slate-800 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/20"
             />
             {query && (
               <button
@@ -360,7 +360,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
           <button
             type="submit"
             disabled={isSearching}
-            className="px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center justify-center gap-2 transition"
+            className="w-10 sm:w-auto px-2 sm:px-4 py-2 rounded-lg sm:rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center justify-center gap-2 transition"
           >
             {isSearching ? (
               <>
@@ -400,11 +400,11 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
               {sortedResults.length} of {results.length} result{results.length === 1 ? '' : 's'}
             </div>
 
-            <div className="flex items-center gap-2 text-xs">
+            <div className="flex items-center gap-1.5 sm:gap-2 text-xs">
               <select
                 value={minSeeders}
                 onChange={(e) => setMinSeeders(Number(e.target.value))}
-                className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 focus:outline-none focus:border-cyan-500"
+                className="px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 focus:outline-none focus:border-cyan-500"
                 title="Minimum seeders"
                 aria-label="Minimum seeders"
               >
@@ -456,19 +456,19 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
             {sortedResults.map((result, index) => (
               <div
                 key={result.guid || result.infoHash || (result.title + '-' + index)}
-                className="p-4 hover:bg-slate-900/80 transition"
+                className="p-2.5 sm:p-4 hover:bg-slate-900/80 transition"
               >
-                <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+                <div className="flex flex-row items-center gap-2 sm:gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start gap-2">
-                      <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20 shrink-0">
-                        <Database className="w-4 h-4 text-cyan-400" />
+                      <div className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-cyan-500/10 border border-cyan-500/20 shrink-0">
+                        <Database className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-400" />
                       </div>
                       <div className="min-w-0">
-                        <h3 className="text-sm font-semibold text-slate-100 break-words">
+                        <h3 className="text-[13px] sm:text-sm font-semibold text-slate-100 line-clamp-2">
                           {result.title}
                         </h3>
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px] text-slate-500">
+                        <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-0.5 mt-1 text-[10px] sm:text-[11px] text-slate-500">
                           <span>{result.indexer || 'Unknown indexer'}</span>
                           <span>{formatPublished(result.publishDate)}</span>
                           {result.protocol && <span className="uppercase">{result.protocol}</span>}
@@ -481,7 +481,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-3 mt-3 text-xs text-slate-400">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-2 sm:mt-3 text-[11px] sm:text-xs text-slate-400">
                       <span className="font-mono">{formatBytes(result.size)}</span>
                       <span className="flex items-center gap-1 text-emerald-400">
                         <Users className="w-3.5 h-3.5" />
@@ -497,7 +497,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
                         href={result.infoUrl}
                         target="_blank"
                         rel="noreferrer"
-                        className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition"
+                        className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition"
                         title="Open result information"
                       >
                         <ExternalLink className="w-4 h-4" />
@@ -532,14 +532,14 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
                               setAddingTorrentKey(current => current === torrentKey ? null : current);
                             }
                           }}
-                          className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center gap-1.5 transition"
+                          className="px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center gap-1.5 transition"
                         >
                           {isAdding ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
                           ) : (
                             <Download className="w-4 h-4" />
                           )}
-                          {isAdding ? 'Adding…' : 'Add'}
+                          <span className="hidden sm:inline">{isAdding ? 'Adding…' : 'Add'}</span>
                         </button>
                       );
                     })()}
