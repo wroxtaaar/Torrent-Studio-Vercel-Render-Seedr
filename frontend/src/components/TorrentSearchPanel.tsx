@@ -370,7 +370,7 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
             ) : (
               <>
                 <Search className="w-4 h-4" />
-                Search
+                <span className="hidden sm:inline">Search</span>
               </>
             )}
           </button>
