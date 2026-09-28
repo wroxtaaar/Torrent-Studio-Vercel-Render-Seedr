@@ -1108,6 +1108,13 @@ async def seedr_request(path: str, method: str = "GET", body: Any = None, form: 
                 return data
 
             last_status, last_data, last_raw = response.status_code, data, raw
+            logger.warning(
+                "Seedr API request failed: method=%s path=%s status=%s response=%s",
+                method,
+                request_path,
+                response.status_code,
+                (raw[:500] if raw else "<empty>"),
+            )
 
             # If a token-export wrapper was copied into Render, retry once with
             # its extracted access_token before classifying it as rejected.
@@ -1278,19 +1285,20 @@ async def rename_seedr_folder(folder_id: str, name: str) -> bool:
     return False
 
 
-async def add_task(magnet: str, folder_id: int) -> dict[str, Any]:
-    normalized = normalize_magnet(magnet)
-    # Use Seedr's established OAuth resource operation for a direct magnet add.
-    # This is the same contract used by the maintained seedrcc client:
-    # POST /oauth_test/resource.php?func=add_torrent&access_token=...
-    # with form fields torrent_magnet, wishlist_id, and folder_id.
-    result = await legacy_seedr_request(
-        "add_torrent",
-        "POST",
-        {
-            "torrent_magnet": normalized,
-            "wishlist_id": None,
-            "folder_id": str(int(folder_id)),
+async def add_task(magnet: str, folder_id: int = 0) -> dict[str, Any]:
+    # Forward the exact magnet URI supplied by the caller.
+    # Do not parse, rebuild, decode, lowercase, or add/remove query parameters.
+    logger.info(
+        "Seedr direct add: POST /tasks folder_id=%s magnet_length=%s",
+        int(folder_id),
+        len(magnet),
+    )
+    result = await seedr_request(
+        "/tasks",
+        method="POST",
+        body={
+            "torrent_magnet": magnet,
+            "folder_id": int(folder_id),
         },
     )
     if not isinstance(result, dict):
@@ -2767,12 +2775,8 @@ async def seedr_add(request: Request):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
 
-    folder = str(SEEDR_LIBRARY_FOLDER_ID).strip()
-    if not folder.isdigit():
-        raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
-
-    # Direct Seedr mode: accept only the magnet and submit it immediately.
-    # No metadata, quota, manifest, file-selection, pause, or resume calls.
+    # Direct Seedr mode:
+    # validate without changing the input, then forward that exact string.
     try:
         payload = await request.json()
     except Exception:
@@ -2781,11 +2785,17 @@ async def seedr_add(request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(400, "Request body must be JSON.")
 
-    magnet = normalize_magnet(str(payload.get("magnet") or "").strip())
-    if not info_hash(magnet):
+    raw_magnet = payload.get("magnet")
+    if not isinstance(raw_magnet, str) or not raw_magnet:
+        raise HTTPException(400, "A magnet link is required.")
+
+    if not info_hash(raw_magnet):
         raise HTTPException(400, "A valid BTIH magnet link is required")
 
-    task = unwrap_seedr_task(await add_task(magnet, int(folder)))
+    configured_folder = str(SEEDR_LIBRARY_FOLDER_ID).strip()
+    folder = int(configured_folder) if configured_folder.isdigit() else 0
+
+    task = unwrap_seedr_task(await add_task(raw_magnet, folder))
     tid = task_id(task)
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
