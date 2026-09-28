@@ -2003,9 +2003,31 @@ export default function App() {
       if (isSingleFileFolder) {
         await api.deleteSeedrFolder(file.folderId);
         setSeedrFiles(prev => prev.filter(item => item.folderId !== file.folderId));
+        // The Files tab also renders the lazily-prefetched Seedr files cache.
+        // Remove the deleted folder from that cache as well, otherwise the
+        // deleted file remains visible at the root after returning from the
+        // Seedr folder view.
+        setSeedrFolderContentsCache(prev => {
+          if (!(file.folderId in prev)) return prev;
+          const next = { ...prev };
+          delete next[file.folderId];
+          return next;
+        });
       } else {
         await api.deleteSeedrFile(file.id);
         setSeedrFiles(prev => prev.filter(item => item.id !== file.id));
+        setSeedrFolderContentsCache(prev => {
+          const cached = prev[file.folderId];
+          if (!cached) return prev;
+          const remaining = cached.filter(item => item.id !== file.id);
+          const next = { ...prev };
+          if (remaining.length > 0) {
+            next[file.folderId] = remaining;
+          } else {
+            delete next[file.folderId];
+          }
+          return next;
+        });
         setSeedrLibraryFolders(prev => prev.map(item =>
           (item.folderId === file.folderId || item.id === file.folderId)
             ? {
@@ -2040,6 +2062,12 @@ export default function App() {
     try {
       await api.deleteSeedrFolder(folderId);
       setSeedrFiles(prev => prev.filter(item => item.folderId !== folderId));
+      setSeedrFolderContentsCache(prev => {
+        if (!(folderId in prev)) return prev;
+        const next = { ...prev };
+        delete next[folderId];
+        return next;
+      });
       setSeedrLibraryFolders(prev => prev.filter(item => item.folderId !== folderId && item.id !== folderId));
       setSelectedSeedrFolderId(prev => prev === folderId ? null : prev);
       setSeedrError(null);
