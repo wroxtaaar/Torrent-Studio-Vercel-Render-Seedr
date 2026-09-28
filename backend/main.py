@@ -868,7 +868,11 @@ async def legacy_seedr_request(
                 or "insufficient space" in normalized_error
                 or "not enough storage" in normalized_error
                 or "storage full" in normalized_error
-                or normalized_error in {"not enough space", "insufficient space"}
+                or "not_enough_space" in raw_error
+                or "insufficient_space" in raw_error
+                or "not_enough_space" in normalized_error
+                or normalized_error.startswith("not enough space")
+                or normalized_error.startswith("insufficient space")
             ):
                 raise SeedrError(
                     "SEEDR_INSUFFICIENT_SPACE",
