@@ -2669,7 +2669,11 @@ export default function App() {
                                       disabled={seedrStreamLoadingId === file.id}
                                       className="p-2 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs hover:bg-cyan-400 transition disabled:opacity-60 disabled:cursor-wait flex items-center justify-center gap-1.5 tap-target"
                                     >
-                                      {seedrStreamLoadingId === file.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                      {seedrStreamLoadingId === file.id ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                      ) : (
+                                        <Play className="w-4 h-4 fill-current translate-x-px" />
+                                      )}
                                       <span className="hidden sm:inline">{seedrStreamLoadingId === file.id ? 'Preparing…' : 'Stream'}</span>
                                     </button>
                                   )}
