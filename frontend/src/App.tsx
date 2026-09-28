@@ -1061,7 +1061,20 @@ export default function App() {
     });
   }, []);
 
-  const handleSearchAdd = async (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string, descriptorUrl?: string) => {
+  const handleSearchAdd = async (
+    source: string,
+    size: number,
+    title: string,
+    infoHash?: string,
+    sourceUrl?: string,
+    descriptorUrl?: string,
+    metadata?: {
+      name: string;
+      hash: string;
+      files: { index: number; name: string; size: number; path: string; type: string; priority?: number }[];
+      totalSize: number;
+    }
+  ) => {
     const trimmedSource = source.trim();
     const seedrSource =
       trimmedSource.toLowerCase().startsWith('magnet:?')
@@ -1079,16 +1092,42 @@ export default function App() {
       return;
     }
 
+    // Search results use metadata before starting Seedr. The search panel
+    // may already have this cached from its background prefetch.
+    let resolvedMetadata = metadata;
+    if (!resolvedMetadata) {
+      try {
+        resolvedMetadata = await api.inspectMagnet(
+          seedrSource,
+          'Downloads',
+          sourceUrl || '',
+          descriptorUrl || ''
+        );
+      } catch (error: any) {
+        setSeedrAddBlockedNotice(error?.message || 'Could not resolve torrent metadata.');
+        setActiveTab('search');
+        window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
+        return;
+      }
+    }
+
+    // Seedr receives the original search magnet unchanged. Metadata is used
+    // only to make the transfer name available immediately.
+    const torrentName =
+      String(resolvedMetadata?.name || '').trim() ||
+      String(title || '').trim() ||
+      'Torrent';
+
     await handleAddMagnet(
       seedrSource,
       'video',
       undefined,
       undefined,
-      infoHash,
+      infoHash || resolvedMetadata?.hash || undefined,
       'seedr',
       undefined,
       undefined,
-      title
+      torrentName
     );
   };
 
