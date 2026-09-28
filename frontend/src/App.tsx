@@ -2199,7 +2199,7 @@ export default function App() {
             </div>
             <div>
               <div className="flex items-center gap-1.5 sm:gap-2">
-                <h1 className="text-sm sm:text-lg font-black tracking-tight text-white">SeedFlow</h1>
+                <h1 className="text-sm sm:text-lg font-black tracking-tight text-white">Torrent Studio</h1>
                 <span className="hidden sm:inline px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 uppercase tracking-widest border border-cyan-500/30">
                   qBt WebAPI
                 </span>
@@ -3250,7 +3250,7 @@ export default function App() {
         }}
         onTestPush={async () => {
           await api.testNotification();
-          dispatchBrowserNotification('SeedFlow Push Notification Test', 'Push alert successfully triggered! Everything is running smoothly.');
+          dispatchBrowserNotification('Torrent Studio Push Notification Test', 'Push alert successfully triggered! Everything is running smoothly.');
           const notifs = await api.getNotifications();
           setNotifications(notifs);
         }}      />
