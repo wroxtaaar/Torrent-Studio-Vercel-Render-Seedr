@@ -108,10 +108,10 @@ export const FileCard: React.FC<FileCardProps> = ({
           <button
             onClick={() => onPlay(file)}
             disabled={streamLoading}
-            className="px-2.5 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold flex items-center gap-1.5 transition tap-target disabled:opacity-60 disabled:cursor-wait"
+            className="px-2.5 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition tap-target disabled:opacity-60 disabled:cursor-wait"
             title={streamLoading ? "Preparing stream…" : "Stream in Browser"}
           >
-            {streamLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+            {streamLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current translate-x-px" />}
             <span className="hidden sm:inline">{streamLoading ? 'Preparing…' : 'Stream'}</span>
           </button>
         )}
