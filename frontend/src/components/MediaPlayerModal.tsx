@@ -49,6 +49,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenControlsVisible, setFullscreenControlsVisible] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mediaError, setMediaError] = useState('');
   const [isSeeking, setIsSeeking] = useState(false);
@@ -408,6 +409,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const handleFullscreenChange = () => {
       const active = document.fullscreenElement === containerRef.current;
       setIsFullscreen(active);
+      setFullscreenControlsVisible(false);
       if (active) {
         void lockLandscape();
       } else {
@@ -822,9 +824,16 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         </div>
 
         {/* Media Viewport */}
-        <div className={`relative flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden ${
-          isFullscreen ? 'h-full min-h-0' : 'min-h-[260px] md:min-h-[420px]'
-        }`}>
+        <div
+          className={`relative flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden ${
+            isFullscreen ? 'h-full min-h-0' : 'min-h-[260px] md:min-h-[420px]'
+          }`}
+          onClick={() => {
+            if (isFullscreen) {
+              setFullscreenControlsVisible(current => !current);
+            }
+          }}
+        >
           {mediaError && (
             <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center">
               <div className="max-w-md rounded-xl bg-slate-900/95 border border-rose-500/30 p-5">
@@ -920,9 +929,15 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         </div>
 
         {/* Player Controls Bar */}
-        <div className={`p-4 bg-slate-900/95 border-t border-slate-800 flex flex-col gap-3 ${
-          isFullscreen ? 'absolute bottom-0 left-0 right-0 z-20 backdrop-blur-md' : ''
-        }`}>
+        <div
+          onClick={(event) => event.stopPropagation()}
+          className={`p-4 bg-slate-900/95 border-t border-slate-800 flex flex-col gap-3 ${
+            isFullscreen
+              ? 'absolute bottom-0 left-0 right-0 z-20 backdrop-blur-md transition-opacity duration-200 ' +
+                (fullscreenControlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none')
+              : ''
+          }`}
+        >
           {/* Scrubber and Time */}
           <div className="flex items-center gap-3">
             <span className="text-xs font-mono text-slate-400 w-12 text-right">
