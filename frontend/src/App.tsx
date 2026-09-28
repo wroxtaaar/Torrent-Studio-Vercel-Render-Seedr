@@ -1077,11 +1077,11 @@ export default function App() {
   ) => {
     const trimmedSource = source.trim();
     const seedrSource =
-      trimmedSource.toLowerCase().startsWith('magnet:?')
-        ? trimmedSource
+      source.toLowerCase().startsWith('magnet:?')
+        ? source
         : infoHash
           ? `magnet:?xt=urn:btih:${infoHash.trim()}`
-          : '';
+          : trimmedSource;
 
     // Search-result Add is a direct Seedr action. Do not open the manual
     // magnet modal and do not ask the user to paste the magnet again.
