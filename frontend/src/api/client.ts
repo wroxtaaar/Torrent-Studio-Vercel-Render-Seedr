@@ -373,17 +373,63 @@ export const api = {
     if (forceBackend === 'seedr') {
       const selection = (selectedFiles || []).map(Number).filter(Number.isInteger);
       const fullManifest = Array.isArray(manifest) ? manifest : [];
-      const size = fullManifest.reduce((sum, file) => sum + Number(file.size || 0), 0) || undefined;
 
+      // Multi-file selection must use the dedicated selective endpoint.
+      // The normal /api/seedr/add endpoint starts a whole torrent and ignores
+      // the UI selection, which breaks the >quota selected-file use case.
+      if (selection.length > 0 && fullManifest.length > 0) {
+        const files = fullManifest.map((file, index) => ({
+          index: Number.isInteger(Number(file.index)) ? Number(file.index) : index,
+          name: file.name,
+          size: Number(file.size || 0)
+        }));
+
+        const res = await apiFetch(API_BASE + '/api/seedr/tasks/add-selected', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            magnet,
+            files,
+            selectedIndexes: selection,
+            torrentName: torrentName || undefined
+          })
+        });
+
+        const body = await res.text();
+        let data: any = null;
+        try { data = body ? JSON.parse(body) : null; } catch {}
+
+        if (!res.ok) {
+          const error = new Error(
+            data?.error || data?.message || data?.detail || body ||
+            `Seedr selected-file add failed (HTTP ${res.status})`
+          );
+          Object.assign(error as any, data || {});
+          if (res.status === 413) (error as any).code = data?.code || 'SEEDR_INSUFFICIENT_SPACE';
+          throw error;
+        }
+
+        return {
+          backend: 'seedr',
+          seedrTaskId: data?.taskId ?? data?.task_id ?? data?.id ?? data?.task?.id ?? null,
+          seedrResponse: data,
+          seedrFolderName: torrentName || data?.torrentName || data?.name || null,
+          seedrFolderId: data?.folderId ?? data?.folder_id ?? data?.task?.folder_id ?? null,
+          selectionApplied: Boolean(data?.writeAccepted),
+          selectionError: data?.writeError || null
+        };
+      }
+
+      // Single-file/non-selection Seedr transfers continue through the normal
+      // add endpoint.
+      const size = fullManifest.reduce((sum, file) => sum + Number(file.size || 0), 0) || undefined;
       const res = await apiFetch(API_BASE + '/api/seedr/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           magnet,
           size,
-          torrent_name: torrentName || undefined,
-          selected_indexes: selection,
-          manifest: fullManifest
+          torrent_name: torrentName || undefined
         })
       });
 
@@ -404,8 +450,8 @@ export const api = {
         seedrResponse: data,
         seedrFolderName: torrentName || data?.torrent_name || data?.name || null,
         seedrFolderId: data?.folder_id ?? data?.task?.folder_id ?? null,
-        selectionApplied: Boolean(data?.selectionApplied),
-        selectionError: data?.selectionError || null
+        selectionApplied: false,
+        selectionError: null
       };
     }
 
