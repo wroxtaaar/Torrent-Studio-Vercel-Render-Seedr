@@ -1068,16 +1068,28 @@ export default function App() {
         ? trimmedSource
         : infoHash
           ? `magnet:?xt=urn:btih:${infoHash.trim()}`
-          : trimmedSource;
+          : '';
 
+    // Search-result Add is a direct Seedr action. Do not open the manual
+    // magnet modal and do not ask the user to paste the magnet again.
     if (!seedrSource) {
-      openAddMagnet(source, sourceUrl, descriptorUrl);
+      setSeedrAddBlockedNotice('This search result does not contain a usable magnet link.');
+      setActiveTab('search');
+      window.setTimeout(() => setSeedrAddBlockedNotice(null), 5000);
       return;
     }
 
-    // Search results now use the same safe metadata-first flow as pasted
-    // magnets. Nothing is sent to Seedr until the user sees the file list.
-    openAddMagnet(seedrSource, sourceUrl, descriptorUrl);
+    await handleAddMagnet(
+      seedrSource,
+      'video',
+      undefined,
+      undefined,
+      infoHash,
+      'seedr',
+      undefined,
+      undefined,
+      title
+    );
   };
 
   const handleAddMagnet = async (
