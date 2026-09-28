@@ -2772,166 +2772,35 @@ async def seedr_add(request: Request):
     if not folder.isdigit():
         raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
 
-    # Direct Seedr mode: this endpoint accepts only the magnet link.
-    # Do not make file metadata, quota, or selection part of the request contract.
+    # Direct Seedr mode: accept only the magnet and submit it immediately.
+    # No metadata, quota, manifest, file-selection, pause, or resume calls.
     try:
         payload = await request.json()
     except Exception:
         payload = None
 
-    magnet_value = payload.get("magnet") if isinstance(payload, dict) else None
-    magnet = normalize_magnet(str(magnet_value or "").strip())
-    h = info_hash(magnet)
-    if not h:
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Request body must be JSON.")
+
+    magnet = normalize_magnet(str(payload.get("magnet") or "").strip())
+    if not info_hash(magnet):
         raise HTTPException(400, "A valid BTIH magnet link is required")
 
-    manifest = []
-    selected_indexes: list[int] = []
-    for raw_index in (body.selected_indexes or []):
-        try:
-            index = int(raw_index)
-        except (TypeError, ValueError):
-            continue
-        if index >= 0:
-            selected_indexes.append(index)
-    selected_indexes = sorted(set(selected_indexes))
-
-    # Metadata-first flow: the browser already resolved the torrent metadata
-    # without starting Seedr. For selective Seedr downloads, quota is checked
-    # against the selected files, not the complete torrent.
-    if manifest:
-        file_count = len(manifest)
-        valid_indexes = {int(item.get("index", i)) for i, item in enumerate(manifest) if isinstance(item, dict)}
-        selected_indexes = [index for index in selected_indexes if index in valid_indexes]
-        if not selected_indexes:
-            raise HTTPException(400, "Select at least one file before sending the torrent to Seedr.")
-
-        selected_size = sum(
-            int(float(item.get("size") or 0))
-            for i, item in enumerate(manifest)
-            if isinstance(item, dict) and int(item.get("index", i)) in set(selected_indexes)
-        )
-        total_size = sum(
-            int(float(item.get("size") or 0))
-            for item in manifest
-            if isinstance(item, dict)
-        )
-
-        try:
-            quota_result = seedr_data(await seedr_request("/user"))
-            storage = quota_result.get("account", {}).get("storage", {}) if isinstance(quota_result, dict) else {}
-            if not isinstance(storage, dict):
-                storage = quota_result.get("storage", {}) if isinstance(quota_result, dict) else {}
-
-            max_space = int(float(
-                storage.get("limit")
-                or storage.get("max_space")
-                or storage.get("maxSpace")
-                or (quota_result.get("max_space", 0) if isinstance(quota_result, dict) else 0)
-                or (quota_result.get("space_max", 0) if isinstance(quota_result, dict) else 0)
-                or 0
-            ))
-            used_space = int(float(
-                storage.get("used")
-                or storage.get("used_space")
-                or storage.get("usedSpace")
-                or (quota_result.get("used_space", 0) if isinstance(quota_result, dict) else 0)
-                or (quota_result.get("space_used", 0) if isinstance(quota_result, dict) else 0)
-                or 0
-            ))
-            if max_space <= 0 or used_space < 0 or used_space > max_space:
-                raise ValueError("invalid Seedr quota")
-            remaining_space = max(0, max_space - used_space)
-        except (SeedrError, TypeError, ValueError, AttributeError) as exc:
-            raise SeedrError(
-                "SEEDR_QUOTA_UNAVAILABLE",
-                503,
-                "Seedr account storage information is temporarily unavailable. The torrent was not submitted.",
-            ) from exc
-
-        if selected_size > remaining_space:
-            raise SeedrError(
-                "SEEDR_INSUFFICIENT_SPACE",
-                413,
-                f"The selected files require {selected_size} bytes, but Seedr has only {remaining_space} bytes remaining.",
-            )
-    else:
-        file_count = 0
-        selected_size = int(float(body.size or 0))
-        total_size = selected_size
-
-        # Legacy/direct add without metadata: only use Seedr when the complete
-        # torrent size is known and fits. We never pretend selection happened
-        # when no manifest was supplied.
-        if selected_size > 0:
-            try:
-                quota_result = seedr_data(await seedr_request("/user"))
-                storage = quota_result.get("account", {}).get("storage", {}) if isinstance(quota_result, dict) else {}
-                max_space = int(float(storage.get("limit") or 0))
-                used_space = int(float(storage.get("used") or 0))
-                remaining_space = max(0, max_space - used_space)
-            except Exception as exc:
-                raise SeedrError(
-                    "SEEDR_QUOTA_UNAVAILABLE",
-                    503,
-                    "Seedr account storage information is temporarily unavailable. Resolve metadata before sending this torrent.",
-                ) from exc
-            if selected_size > remaining_space:
-                raise SeedrError(
-                    "SEEDR_INSUFFICIENT_SPACE",
-                    413,
-                    f"This torrent requires {selected_size} bytes, but Seedr has only {remaining_space} bytes remaining.",
-                )
-
-    # This is deliberately the only task-creation call. Free-account-safe flow:
-    # POST /tasks -> immediately POST /tasks/{id}/unwanted when a subset was
-    # selected. No pause/resume, no GET /tasks collection, no library mutation.
     task = unwrap_seedr_task(await add_task(magnet, int(folder)))
     tid = task_id(task)
     if not tid:
         raise HTTPException(502, "Seedr did not return a task id")
 
-    task_id_value = str(tid).strip()
-    torrent_name = str(body.torrent_name or "").strip()
     task_folder_id = seedr_task_folder_id(task)
-
-    if torrent_name and task_id_value:
-        _seedr_torrent_names_by_task[task_id_value] = torrent_name
-
-    selection_applied = False
-    selection_error = ""
-    if manifest and len(selected_indexes) < file_count:
-        try:
-            selection = await apply_seedr_file_selection(
-                task_id_value,
-                file_count,
-                selected_indexes,
-            )
-            selection_applied = bool(selection.get("applied"))
-        except SeedrError as exc:
-            selection_error = exc.detail
-            # Do not claim that only selected files are downloading. The task
-            # was created, but the account did not accept the selection write.
-            raise
-
-    schedule_seedr_cleanup(
-        task_id_value,
-        torrent_name or seedr_task_name(task) or f"Torrent {task_id_value}",
-        task_folder_id,
-    )
+    task_name = seedr_task_name(task) or f"Torrent {tid}"
+    schedule_seedr_cleanup(str(tid), task_name, task_folder_id)
 
     return {
         "backend": "seedr",
         "task_id": int(tid) if tid.isdigit() else tid,
         "id": int(tid) if tid.isdigit() else tid,
-        "torrent_name": torrent_name,
-        "folder_id": task_folder_id or None,
-        "task": task,
-        "selectionApplied": selection_applied,
-        "selectionError": selection_error or None,
-        "selectedIndexes": selected_indexes,
-        "selectedSize": selected_size,
-        "totalSize": total_size,
+        "torrent_name": task_name,
+        "folder_id": task_folder_id,
     }
 
 @app.get("/api/seedr/tasks/{tid}/progress")
