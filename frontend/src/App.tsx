@@ -74,20 +74,9 @@ import { TorrentSearchPanel } from './components/TorrentSearchPanel.tsx';
 
 export default function App() {
   // Navigation & Theme
-  const [seedrOnboardingRequired, setSeedrOnboardingRequired] = useState(() => {
-    try {
-      return window.localStorage.getItem('torrent_studio_seedr_onboarding_complete') !== 'true';
-    } catch {
-      return true;
-    }
-  });
-
-  const completeSeedrOnboarding = useCallback(() => {
-    try {
-      window.localStorage.setItem('torrent_studio_seedr_onboarding_complete', 'true');
-    } catch {}
-    setSeedrOnboardingRequired(false);
-  }, []);
+  // This branch deliberately does not treat acknowledgement as Seedr authorization.
+  // Until per-user OAuth is implemented, visitors remain in the onboarding flow.
+  const [seedrOnboardingStep, setSeedrOnboardingStep] = useState<'welcome' | 'connect'>('welcome');
 
   const [activeTab, setActiveTab] = useState<'search' | 'files' | 'shared' | 'activity' | 'storage'>(() => {
     try {
@@ -3278,56 +3267,52 @@ export default function App() {
           onClose={() => setDeleteTarget(null)}
         />
       )}
-      {seedrOnboardingRequired && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/90 px-4 py-6 backdrop-blur-md">
-          <div className="w-full max-w-md rounded-2xl border border-emerald-500/25 bg-slate-900 p-5 shadow-2xl shadow-emerald-500/10 sm:p-6">
-            <div className="flex items-start gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400">
-                <Cloud className="h-6 w-6" />
-              </div>
-              <div className="min-w-0">
-                <h2 className="text-lg font-bold text-slate-100">Seedr account required</h2>
-                <p className="mt-1 text-sm leading-5 text-slate-400">
-                  Torrent Studio uses Seedr to download, store, and stream your files. Create your own Seedr account before using the app.
-                </p>
-              </div>
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/95 px-4 py-6 backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="seedr-onboarding-title">
+        <div className="w-full max-w-md rounded-2xl border border-emerald-500/25 bg-slate-900 p-5 shadow-2xl shadow-emerald-500/10 sm:p-6">
+          <div className="flex items-start gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400">
+              <Cloud className="h-6 w-6" />
             </div>
-
-            <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5">
-              <div className="flex items-start gap-3">
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
-                <div>
-                  <p className="text-sm font-semibold text-slate-200">New to Seedr?</p>
-                  <p className="mt-0.5 text-xs leading-5 text-slate-500">Create a free Seedr account, then return here.</p>
-                </div>
-              </div>
+            <div className="min-w-0">
+              <h2 id="seedr-onboarding-title" className="text-lg font-bold text-slate-100">
+                {seedrOnboardingStep === 'welcome' ? 'Your own Seedr account' : 'Connect your Seedr account'}
+              </h2>
+              <p className="mt-1 text-sm leading-5 text-slate-400">
+                {seedrOnboardingStep === 'welcome'
+                  ? 'Torrent Studio is designed to use your personal Seedr storage. Create a Seedr account or continue if you already have one.'
+                  : 'Connecting an individual Seedr account is not available in this preview yet. No account is connected, and Torrent Studio will not use the developer’s Seedr storage.'}
+              </p>
             </div>
-
-            <div className="mt-5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              <a
-                href="https://www.seedr.cc/"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400"
-              >
-                Create Seedr Account
-                <ExternalLink className="h-4 w-4" />
-              </a>
-              <button
-                type="button"
-                onClick={completeSeedrOnboarding}
-                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700"
-              >
-                I already have an account
-              </button>
-            </div>
-
-            <p className="mt-4 text-center text-[11px] leading-4 text-slate-500">
-              Your Seedr account is separate from Torrent Studio. Torrent Studio does not create Seedr accounts for you.
-            </p>
           </div>
+          {seedrOnboardingStep === 'welcome' ? (
+            <>
+              <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5">
+                <p className="text-sm font-semibold text-slate-200">New to Seedr?</p>
+                <p className="mt-1 text-xs leading-5 text-slate-400">Create a free account on Seedr’s website, then return to connect it when individual account linking is supported.</p>
+              </div>
+              <div className="mt-5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                <a href="https://www.seedr.cc/" target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400">
+                  Create Seedr Account <ExternalLink className="h-4 w-4" />
+                </a>
+                <button type="button" onClick={() => setSeedrOnboardingStep('connect')} className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700">
+                  I already have an account
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mt-5 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3.5">
+                <p className="text-sm font-semibold text-amber-200">Account linking is coming soon</p>
+                <p className="mt-1 text-xs leading-5 text-slate-300">This test branch does not request your Seedr password or API token. Connecting requires an approved per-user authorization flow; it cannot be completed in this preview.</p>
+              </div>
+              <button type="button" onClick={() => setSeedrOnboardingStep('welcome')} className="mt-5 w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-700">
+                Back to account setup
+              </button>
+            </>
+          )}
+          <p className="mt-4 text-center text-[11px] leading-4 text-slate-500">No Seedr credentials are required to view this onboarding preview.</p>
         </div>
-      )}
+      </div>
 
     </div>
   );
