@@ -2865,6 +2865,45 @@ async def seedr_add(request: Request):
         "folder_id": task_folder_id,
     }
 
+def _seedr_file_folder_id(files: list[dict[str, Any]]) -> str:
+    """Return the actual torrent folder id exposed by completed file rows."""
+    for file in files:
+        folder_id = str(file.get("folderId") or "").strip()
+        if folder_id:
+            return folder_id
+    return ""
+
+
+def _seedr_effective_task_folder_id(
+    task: dict[str, Any],
+    files: list[dict[str, Any]] | None = None,
+) -> str:
+    """Prefer the created torrent folder over the destination parent folder."""
+    task_folder_id = seedr_task_folder_id(task)
+    file_folder_id = _seedr_file_folder_id(files or [])
+
+    if file_folder_id and (
+        not task_folder_id
+        or file_folder_id != task_folder_id
+        or task_folder_id == SEEDR_LIBRARY_FOLDER_ID
+    ):
+        return file_folder_id
+    return task_folder_id
+
+
+def _remember_seedr_cleanup_folder(tid: str, folder_id: str) -> None:
+    folder_id = str(folder_id or "").strip()
+    if not folder_id:
+        return
+    job = _seedr_cleanup_jobs.get(str(tid).strip())
+    if not job:
+        return
+    if str(job.get("folderId") or "").strip() == folder_id:
+        return
+    job["folderId"] = folder_id
+    _save_seedr_cleanup_jobs()
+
+
 @app.get("/api/seedr/tasks/{tid}/progress")
 async def seedr_task_progress(tid: str):
     """Fast polling endpoint: only fetch task state/progress from Seedr."""
@@ -2897,18 +2936,27 @@ async def seedr_task_progress(tid: str):
     )
 
     task_folder_id = seedr_task_folder_id(task)
+    completed_files: list[dict[str, Any]] = []
+    if complete:
+        try:
+            completed_files = await task_contents(tid)
+        except (HTTPException, SeedrError):
+            completed_files = []
+
+    effective_folder_id = _seedr_effective_task_folder_id(task, completed_files)
     task_id_value = str(tid).strip()
 
     canonical_name = str(
         _seedr_torrent_names_by_task.get(task_id_value)
-        or _seedr_torrent_names.get(task_folder_id)
+        or _seedr_torrent_names.get(effective_folder_id)
         or seedr_task_name(task)
         or ""
     ).strip()
 
-    if task_folder_id and canonical_name:
-        previous_name = _seedr_torrent_names.get(task_folder_id)
-        _seedr_torrent_names[task_folder_id] = canonical_name
+    if effective_folder_id and canonical_name:
+        _seedr_torrent_names[effective_folder_id] = canonical_name
+        if complete:
+            _remember_seedr_cleanup_folder(task_id_value, effective_folder_id)
         # Seedr can expose the folder only after the task starts. Rename at
         # that point, rather than only immediately after /tasks POST.
         # Do not call Seedr folder-management endpoints from the free-account
@@ -2920,7 +2968,7 @@ async def seedr_task_progress(tid: str):
         "status": status,
         "progress": progress,
         "name": seedr_task_display_name,
-        "folderId": task_folder_id,
+        "folderId": effective_folder_id,
     }
 
 @app.get("/api/seedr/tasks/{tid}")
@@ -2937,7 +2985,8 @@ async def seedr_task(tid: str):
     if complete:
         progress = 100
     files = await task_contents(tid)
-    folder_id = seedr_task_folder_id(task) or str(files[0].get("folderId") if files else "")
+    folder_id = _seedr_effective_task_folder_id(task, files)
+    _remember_seedr_cleanup_folder(str(tid).strip(), folder_id)
     task_id_value = str(tid).strip()
     canonical_name = str(
         _seedr_torrent_names_by_task.get(task_id_value)
