@@ -3105,15 +3105,6 @@ export default function App() {
         onToggleMinimize={() => setIsPlayerMinimized(!isPlayerMinimized)}
       />
 
-      {/* Mobile Floating Action Button (FAB) for Add Magnet */}
-      <button
-        onClick={() => openAddMagnet()}
-        className="md:hidden fixed right-3 bottom-[4.6rem] z-30 w-12 h-12 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-xl shadow-cyan-500/30 flex items-center justify-center font-bold"
-        title="Add Magnet Link"
-      >
-        <Plus className="w-5 h-5 stroke-[2.5]" />
-      </button>
-
       {/* Mobile More actions sheet */}
       {isMobileMoreOpen && (
         <>
