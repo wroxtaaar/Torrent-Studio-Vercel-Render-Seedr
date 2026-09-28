@@ -2177,16 +2177,16 @@ export default function App() {
   return (
     <div className={`min-h-screen flex flex-col ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : theme === 'dim' ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-900'} transition-colors duration-200`}>
       {/* Top Main Navigation Header */}
-      <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-3 sm:px-6 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+      <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-2.5 sm:px-6 py-1.5 sm:py-3">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-3">
           {/* Logo & Brand */}
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-500/25">
-              <Cloud className="w-5 h-5 text-slate-950 font-black fill-current" />
+              <Cloud className="w-4 h-4 sm:w-5 sm:h-5 text-slate-950 font-black fill-current" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base sm:text-lg font-black tracking-tight text-white">SeedFlow</h1>
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <h1 className="text-sm sm:text-lg font-black tracking-tight text-white">SeedFlow</h1>
                 <span className="hidden sm:inline px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 uppercase tracking-widest border border-cyan-500/30">
                   qBt WebAPI
                 </span>
@@ -2220,9 +2220,9 @@ export default function App() {
             {/* "+ Add Magnet" Primary CTA */}
             <button
               onClick={() => openAddMagnet()}
-              className="px-3 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs sm:text-sm font-bold flex items-center gap-1.5 shadow-lg shadow-cyan-500/20 transition tap-target"
+              className="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs sm:text-sm font-bold flex items-center gap-1.5 shadow-lg shadow-cyan-500/20 transition tap-target"
             >
-              <Plus className="w-4 h-4 stroke-[3]" />
+              <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[3]" />
               <span className="hidden sm:inline">Add Magnet</span>
               <span className="sm:hidden">Add</span>
             </button>
@@ -2230,10 +2230,10 @@ export default function App() {
             {/* Notification Bell */}
             <button
               onClick={() => setIsNotificationsOpen(true)}
-              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 relative transition tap-target flex items-center justify-center border border-slate-800"
+              className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 relative transition tap-target flex items-center justify-center border border-slate-800"
               title="Notifications & Push Alerts"
             >
-              <Bell className="w-4 h-4" />
+              <Bell className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               {unreadNotifsCount > 0 && (
                 <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-cyan-500 text-slate-950 font-bold text-[9px] flex items-center justify-center">
                   {unreadNotifsCount}
@@ -2307,9 +2307,9 @@ export default function App() {
       </div>
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-6 pb-24 md:pb-12">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-2.5 sm:p-6 pb-20 md:pb-12">
         {seedrAddBlockedNotice && (
-          <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-2.5 shadow-lg">
+          <div className="mb-2.5 sm:mb-4 p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-2.5 shadow-lg">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <div className="min-w-0">
               <div className="font-bold text-amber-300">Cannot add another Seedr download</div>
@@ -2374,9 +2374,9 @@ export default function App() {
 
         {/* TAB 2: MY CLOUD FILES */}
         {activeTab === 'files' && (
-          <div className="space-y-4">
+          <div className="space-y-2.5 sm:space-y-4">
             {/* Persistent Seedr Library */}
-            <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/20">
+            <div className="p-2.5 sm:p-4 rounded-xl sm:rounded-2xl bg-emerald-500/5 border border-emerald-500/20">
               {seedrDeleteNotice && (
                 <div className="mb-3 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">
                   <CheckCircle2 className="w-4 h-4" />
@@ -2394,12 +2394,12 @@ export default function App() {
                       </span>
                     )}
                   </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
+                  <p className="hidden sm:block text-xs text-slate-400 mt-0.5">
                     Files already downloaded to your Seedr account stay visible here, even after refreshing Torrent Studio.
                   </p>
                   {seedrConfigured && (
                     seedrQuota ? (
-                      <div className="mt-3 grid grid-cols-3 gap-2 max-w-xl">
+                      <div className="hidden sm:grid mt-3 grid-cols-3 gap-2 max-w-xl">
                         <div className="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2">
                           <div className="text-[10px] uppercase tracking-wide text-slate-500">Consumed</div>
                           <div className="text-sm font-bold text-slate-100 mt-0.5">{formatBytes(seedrQuota.usedSpace)}</div>
@@ -2437,6 +2437,26 @@ export default function App() {
                           <div className="text-sm font-bold text-slate-100 mt-0.5">{formatBytes(seedrQuota.maxSpace)}</div>
                         </div>
                       </div>
+
+                      <div className="sm:hidden mt-2.5 rounded-xl bg-slate-950/70 border border-slate-800/80 px-3 py-2.5">
+                        <div className="flex items-end justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-[10px] uppercase tracking-wide text-slate-500">Seedr storage</div>
+                            <div className="text-sm font-bold text-slate-100 mt-0.5">
+                              {formatQuotaBytes(seedrQuota.usedSpace)} <span className="text-slate-500 font-normal">/ {formatQuotaBytes(seedrQuota.maxSpace)}</span>
+                            </div>
+                          </div>
+                          <div className={`text-right shrink-0 text-xs font-bold ${seedrQuota.remainingSpace <= 0 ? 'text-rose-300' : seedrQuota.remainingSpace < 500 * 1024 * 1024 ? 'text-rose-300' : seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3 ? 'text-amber-300' : 'text-emerald-300'}`}>
+                            {formatQuotaBytes(seedrQuota.remainingSpace)} left
+                          </div>
+                        </div>
+                        <div className="mt-2 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${seedrQuota.remainingSpace < 500 * 1024 * 1024 ? 'bg-rose-400' : seedrQuota.maxSpace > 0 && seedrQuota.remainingSpace / seedrQuota.maxSpace <= 0.3 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                            style={{ width: ${Math.max(0, Math.min(100, seedrQuota.maxSpace > 0 ? (seedrQuota.usedSpace / seedrQuota.maxSpace) * 100 : 0))}% }}
+                          />
+                        </div>
+                      </div>
                     ) : null
                   )}
                 </div>
@@ -2444,10 +2464,10 @@ export default function App() {
                   type="button"
                   onClick={loadSeedrLibrary}
                   disabled={seedrLoading}
-                  className="shrink-0 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
+                  className="shrink-0 px-2 sm:px-3 py-1.5 rounded-lg sm:rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${seedrLoading ? 'animate-spin' : ''}`} />
-                  <span>{seedrLoading ? 'Refreshing...' : 'Refresh Seedr'}</span>
+                  <span className="hidden sm:inline">{seedrLoading ? 'Refreshing...' : 'Refresh Seedr'}</span>
                 </button>
               </div>
 
@@ -2484,7 +2504,7 @@ export default function App() {
               {seedrConfigured && (
                 <div className="mt-3">
                   {selectedSeedrFolderId === null ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
                       {seedrFolderGroups.map(folder => {
                         // Seedr always stores a torrent as a folder. Keep the
                         // top-level library consistent even when the folder has
@@ -2492,7 +2512,7 @@ export default function App() {
                         return (
                           <div
                             key={folder.folderId}
-                            className="h-full rounded-xl bg-slate-900/80 border border-slate-800 px-3 py-3 hover:border-cyan-500/30 transition"
+                            className="h-full rounded-lg sm:rounded-xl bg-slate-900/80 border border-slate-800 px-2.5 sm:px-3 py-2 sm:py-3 hover:border-cyan-500/30 transition"
                           >
                             <div className="flex items-center gap-2.5">
                               <button
@@ -2501,12 +2521,12 @@ export default function App() {
                                 className="min-w-0 flex-1 text-left flex items-center gap-3"
                                 disabled={folder.folderId === '__root__'}
                               >
-                                <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 shrink-0">
-                                  <Folder className="w-5 h-5" />
+                                <div className="p-1.5 sm:p-2 rounded-lg bg-cyan-500/10 text-cyan-400 shrink-0">
+                                  <Folder className="w-4 h-4 sm:w-5 sm:h-5" />
                                 </div>
                                 <div className="min-w-0 flex-1">
-                                  <div className="truncate text-sm font-semibold text-slate-100">{folder.name}</div>
-                                  <div className="text-[10px] text-slate-500 mt-0.5">
+                                  <div className="truncate text-[13px] sm:text-sm font-semibold text-slate-100">{folder.name}</div>
+                                  <div className="text-[9px] sm:text-[10px] text-slate-500 mt-0.5">
                                     {folder.filesCount} files • {formatBytes(folder.totalSize)}
                                     {folder.active && <span className="text-emerald-300"> • Downloading</span>}
                                   </div>
@@ -2546,9 +2566,11 @@ export default function App() {
                                   <button
                                     type="button"
                                     onClick={() => handleDownloadSeedrFolder(folder.folderId, folder.name)}
-                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition"
+                                    className="px-2 py-1.5 sm:px-2.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs hover:bg-emerald-300 transition flex items-center gap-1"
+                                    title="Download folder"
                                   >
-                                    Download
+                                    <Download className="w-3.5 h-3.5" />
+                                    <span className="hidden sm:inline">Download</span>
                                   </button>
                                   <button
                                     type="button"
@@ -2678,7 +2700,7 @@ export default function App() {
               )}            </div>
 
             {/* Header & Breadcrumb & Search */}
-            <div className="flex flex-col gap-3 p-4 rounded-2xl bg-slate-900 border border-slate-800">
+            <div className="flex flex-col gap-2 p-2.5 sm:p-4 rounded-xl sm:rounded-2xl bg-slate-900 border border-slate-800">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 {/* Folder Breadcrumb */}
                 <div className="flex items-center gap-2 overflow-x-auto text-xs font-semibold">
@@ -2707,7 +2729,7 @@ export default function App() {
                     placeholder="Search files by name..."
                     value={fileSearch}
                     onChange={(e) => setFileSearch(e.target.value)}
-                    className="w-full pl-9 pr-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                    className="w-full pl-9 pr-3 py-2 sm:py-1.5 rounded-lg sm:rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
                   />
                 </div>
 
@@ -2963,7 +2985,7 @@ export default function App() {
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-center gap-2.5 overflow-hidden">
                         <div className="p-2.5 rounded-xl bg-cyan-500/10 text-cyan-400 shrink-0">
-                          <Folder className="w-5 h-5" />
+                          <Folder className="w-[18px] h-[18px]" />
                         </div>
                         <div className="truncate">
                           <h4 className="text-sm font-semibold text-slate-100 truncate">{folder.name}</h4>
@@ -3080,10 +3102,10 @@ export default function App() {
       {/* Mobile Floating Action Button (FAB) for Add Magnet */}
       <button
         onClick={() => openAddMagnet()}
-        className="md:hidden fixed right-4 bottom-20 z-30 p-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-xl shadow-cyan-500/30 flex items-center justify-center font-bold"
+        className="md:hidden fixed right-3 bottom-[4.6rem] z-30 w-12 h-12 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-xl shadow-cyan-500/30 flex items-center justify-center font-bold"
         title="Add Magnet Link"
       >
-        <Plus className="w-6 h-6 stroke-[2.5]" />
+        <Plus className="w-5 h-5 stroke-[2.5]" />
       </button>
 
       {/* Mobile More actions sheet */}
@@ -3133,13 +3155,13 @@ export default function App() {
       )}
 
       {/* Mobile Bottom Navigation */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-950/95 backdrop-blur-xl border-t border-slate-800 px-1 pb-[calc(env(safe-area-inset-bottom)+4px)] pt-1.5">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-950/95 backdrop-blur-xl border-t border-slate-800 px-1 pb-[calc(env(safe-area-inset-bottom)+2px)] pt-1">
         <div className="grid grid-cols-4 items-center">
           <button
             onClick={() => { setActiveTab('search'); setIsMobileMoreOpen(false); }}
-            className={`flex flex-col items-center justify-center gap-0.5 min-h-12 px-1 rounded-xl transition ${activeTab === 'search' ? 'text-cyan-400' : 'text-slate-400'}`}
+            className={`flex flex-col items-center justify-center gap-0.5 min-h-11 px-1 rounded-lg transition ${activeTab === 'search' ? 'text-cyan-400' : 'text-slate-400'}`}
           >
-            <Search className="w-5 h-5" />
+            <Search className="w-[18px] h-[18px]" />
             <span className="text-[9px] font-semibold">Search</span>
           </button>
 
