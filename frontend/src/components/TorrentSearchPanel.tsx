@@ -14,7 +14,20 @@ import { api, TorrentSearchResult } from '../api/client.ts';
 import { formatBytes } from '../utils/formatters.ts';
 
 interface TorrentSearchPanelProps {
-  onAdd: (source: string, size: number, title: string, infoHash?: string, sourceUrl?: string, descriptorUrl?: string) => void | Promise<void>;
+  onAdd: (
+    source: string,
+    size: number,
+    title: string,
+    infoHash?: string,
+    sourceUrl?: string,
+    descriptorUrl?: string,
+    metadata?: {
+      name: string;
+      hash: string;
+      files: { index: number; name: string; size: number; path: string; type: string; priority?: number }[];
+      totalSize: number;
+    }
+  ) => void | Promise<void>;
 }
 
 function formatPublished(value?: string) {
@@ -35,6 +48,17 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
   const [minSeeders, setMinSeeders] = useState(0);
   const [showRecentSearches, setShowRecentSearches] = useState(false);
   const [addingTorrentKey, setAddingTorrentKey] = useState<string | null>(null);
+
+  // Metadata is prefetched in small batches so search remains fast while the
+  // most likely results are already resolved when the user clicks Add.
+  const metadataCacheRef = useRef(new Map<string, {
+    name: string;
+    hash: string;
+    files: { index: number; name: string; size: number; path: string; type: string; priority?: number }[];
+    totalSize: number;
+  }>());
+  const metadataInFlightRef = useRef(new Set<string>());
+  const prefetchGenerationRef = useRef(0);
   const recentSearchRef = useRef<HTMLDivElement | null>(null);
   const apiFetchRecent = (input: RequestInfo | URL, init?: RequestInit) => {
     const base = (String(import.meta.env.VITE_API_URL || '').trim() || 'https://torrent-studio-vercel-render-seedr-26fd.onrender.com').replace(/\/+$/, '');
@@ -140,6 +164,54 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
       const data = await api.searchTorrents(trimmed, 50);
       setResults(data);
       setSearched(true);
+
+      // Do not wait for metadata before displaying results. Start resolving
+      // the first two results immediately, then the next two after that batch
+      // finishes. The cache is used by Add when available.
+      const generation = ++prefetchGenerationRef.current;
+      void (async () => {
+        const candidates = data.slice(0, 4);
+        for (let start = 0; start < candidates.length; start += 2) {
+          if (prefetchGenerationRef.current !== generation) return;
+
+          const batch = candidates.slice(start, start + 2);
+          await Promise.allSettled(batch.map(async (result) => {
+            const source = result.magnetUrl || result.downloadUrl || result.sourceUrl;
+            const key = result.infoHash || source || result.title;
+            if (!source || !key || metadataCacheRef.current.has(key) || metadataInFlightRef.current.has(key)) {
+              return;
+            }
+
+            metadataInFlightRef.current.add(key);
+            try {
+              const metadata = await api.inspectMagnet(
+                source,
+                'Downloads',
+                result.infoUrl || result.sourceUrl || '',
+                result.descriptorUrl || ''
+              );
+
+              if (
+                metadata &&
+                !metadata.pending &&
+                Array.isArray(metadata.files) &&
+                metadata.files.length > 0
+              ) {
+                metadataCacheRef.current.set(key, {
+                  name: String(metadata.name || '').trim(),
+                  hash: String(metadata.hash || result.infoHash || '').trim(),
+                  files: metadata.files,
+                  totalSize: Number(metadata.totalSize || 0)
+                });
+              }
+            } catch {
+              // Add will simply resolve this result on demand if prefetch fails.
+            } finally {
+              metadataInFlightRef.current.delete(key);
+            }
+          }));
+        }
+      })();
 
       if (data.length === 0) {
         setError('No matching torrent results were found.');
@@ -446,7 +518,16 @@ export const TorrentSearchPanel: React.FC<TorrentSearchPanelProps> = ({ onAdd })
 
                             setAddingTorrentKey(torrentKey);
                             try {
-                              await onAdd(source, Number(result.size) || 0, result.title, result.infoHash, result.infoUrl || result.sourceUrl || '', result.descriptorUrl || '');
+                              const metadata = metadataCacheRef.current.get(torrentKey);
+                              await onAdd(
+                                source,
+                                Number(result.size) || 0,
+                                result.title,
+                                result.infoHash,
+                                result.infoUrl || result.sourceUrl || '',
+                                result.descriptorUrl || '',
+                                metadata
+                              );
                             } finally {
                               setAddingTorrentKey(current => current === torrentKey ? null : current);
                             }
