@@ -766,7 +766,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         }`}
       >
         {/* Top Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900/90 z-10">
+        <div className={`${isFullscreen ? 'hidden' : 'flex'} items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900/90 z-10`}>
           <div className="flex items-center gap-3 overflow-hidden">
             <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-400">
               {isVideo ? <Video className="w-5 h-5" /> : <Music className="w-5 h-5" />}
@@ -823,7 +823,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
 
         {/* Media Viewport */}
         <div className={`relative flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden ${
-          isFullscreen ? 'min-h-0' : 'min-h-[260px] md:min-h-[420px]'
+          isFullscreen ? 'h-full min-h-0' : 'min-h-[260px] md:min-h-[420px]'
         }`}>
           {mediaError && (
             <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center">
@@ -920,7 +920,9 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         </div>
 
         {/* Player Controls Bar */}
-        <div className="p-4 bg-slate-900 border-t border-slate-800 flex flex-col gap-3">
+        <div className={`p-4 bg-slate-900/95 border-t border-slate-800 flex flex-col gap-3 ${
+          isFullscreen ? 'absolute bottom-0 left-0 right-0 z-20 backdrop-blur-md' : ''
+        }`}>
           {/* Scrubber and Time */}
           <div className="flex items-center gap-3">
             <span className="text-xs font-mono text-slate-400 w-12 text-right">
