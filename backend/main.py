@@ -1180,6 +1180,39 @@ def magnet_display_name(value: Any) -> str:
         return ""
 
 
+def task_complete(task: dict[str, Any]) -> bool:
+    """Return True when Seedr reports a task as finished."""
+    if not isinstance(task, dict):
+        return False
+
+    # Seedr/API variants use different completion fields across versions.
+    for key in ("completed", "complete", "finished", "done", "is_completed", "isComplete"):
+        value = task.get(key)
+        if isinstance(value, bool) and value:
+            return True
+        if isinstance(value, (int, float)) and value == 1:
+            return True
+
+    state = str(
+        task.get("state")
+        or task.get("status")
+        or task.get("phase")
+        or ""
+    ).strip().lower()
+    if state in {"complete", "completed", "finished", "done", "success", "seeding"}:
+        return True
+
+    # A numeric 100% is authoritative even when the state field is absent or
+    # uses a provider-specific value.
+    try:
+        if float(task.get("progress") or 0) >= 100:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    return False
+
+
 def seedr_task_name(task: dict[str, Any]) -> str:
     nested_torrent = task.get("torrent") if isinstance(task.get("torrent"), dict) else {}
     payload = task.get("torrent_payload") if isinstance(task.get("torrent_payload"), dict) else {}
