@@ -2479,7 +2479,7 @@ export default function App() {
                   className="shrink-0 px-2 sm:px-3 py-1.5 rounded-lg sm:rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${seedrLoading ? 'animate-spin' : ''}`} />
-                  <span className="hidden sm:inline">{seedrLoading ? 'Refreshing...' : 'Refresh Seedr'}</span>
+                  <span>{seedrLoading ? 'Refreshing...' : 'Refresh'}</span>
                 </button>
               </div>
 
