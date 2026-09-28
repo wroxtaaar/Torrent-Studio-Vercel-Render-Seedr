@@ -2764,20 +2764,28 @@ async def seedr_add_selected(request: Request):
     }
 
 @app.post("/api/seedr/add")
-async def seedr_add(body: MagnetRequest):
+async def seedr_add(request: Request):
     if not SEEDR_TOKEN:
         raise HTTPException(503, "Seedr is not configured")
 
-    folder = str(body.folder_id or SEEDR_LIBRARY_FOLDER_ID).strip()
+    folder = str(SEEDR_LIBRARY_FOLDER_ID).strip()
     if not folder.isdigit():
         raise HTTPException(503, "SEEDR_LIBRARY_FOLDER_ID must be configured")
 
-    magnet = normalize_magnet(body.magnet)
+    # Direct Seedr mode: this endpoint accepts only the magnet link.
+    # Do not make file metadata, quota, or selection part of the request contract.
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+
+    magnet_value = payload.get("magnet") if isinstance(payload, dict) else None
+    magnet = normalize_magnet(str(magnet_value or "").strip())
     h = info_hash(magnet)
     if not h:
         raise HTTPException(400, "A valid BTIH magnet link is required")
 
-    manifest = body.manifest if isinstance(body.manifest, list) else []
+    manifest = []
     selected_indexes: list[int] = []
     for raw_index in (body.selected_indexes or []):
         try:
