@@ -1280,19 +1280,18 @@ async def rename_seedr_folder(folder_id: str, name: str) -> bool:
 
 async def add_task(magnet: str, folder_id: int) -> dict[str, Any]:
     normalized = normalize_magnet(magnet)
-    # Seedr's API Console documents POST /tasks under the primary API base
-    # with a Personal Access Token and JSON body containing torrent_magnet
-    # and folder_id.
-    result = seedr_data(
-        await seedr_request(
-            "/tasks",
-            "POST",
-            {
-                "torrent_magnet": normalized,
-                "folder_id": int(folder_id),
-            },
-            base_url=SEEDR_BASE,
-        )
+    # Use Seedr's established OAuth resource operation for a direct magnet add.
+    # This is the same contract used by the maintained seedrcc client:
+    # POST /oauth_test/resource.php?func=add_torrent&access_token=...
+    # with form fields torrent_magnet, wishlist_id, and folder_id.
+    result = await legacy_seedr_request(
+        "add_torrent",
+        "POST",
+        {
+            "torrent_magnet": normalized,
+            "wishlist_id": None,
+            "folder_id": str(int(folder_id)),
+        },
     )
     if not isinstance(result, dict):
         raise HTTPException(502, "Seedr did not return a valid task response")
