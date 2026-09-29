@@ -185,7 +185,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const streamUrl = selectedAudioIndex !== undefined
       ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
       : preferredSeedrUrl;
-    const fallbackStreamUrl = file.externalStreamUrl && file.streamUrl !== file.externalStreamUrl
+    const fallbackStreamUrl = file.externalStreamUrl && file.streamUrl && file.streamUrl !== file.externalStreamUrl
       ? file.streamUrl
       : '';
 
