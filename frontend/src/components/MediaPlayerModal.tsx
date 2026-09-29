@@ -185,9 +185,12 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
     const streamUrl = selectedAudioIndex !== undefined
       ? `${preferredSeedrUrl}${preferredSeedrUrl.includes('?') ? '&' : '?'}audio=${encodeURIComponent(String(selectedAudioIndex))}`
       : preferredSeedrUrl;
-    const fallbackStreamUrl = file.externalStreamUrl && file.streamUrl && file.streamUrl !== file.externalStreamUrl
-      ? file.streamUrl
-      : '';
+    const fallbackStreamUrl = String(file.externalStreamUrl || '').trim() &&
+      String(file.externalStreamUrl || '').trim() !== streamUrl
+      ? String(file.externalStreamUrl || '').trim()
+      : String(file.downloadUrl || '').trim() !== streamUrl
+        ? String(file.downloadUrl || '').trim()
+        : '';
 
     const restoreTime = resumeTimeRef.current;
     const restorePlaying = resumePlayingRef.current || (!media.paused && duration > 0);
@@ -692,7 +695,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
         {isVideo ? (
           <video
             ref={videoRef}
-            src={file.streamUrl || file.externalStreamUrl}
+            src={file.streamUrl || file.externalStreamUrl || file.downloadUrl}
             className="w-full h-32 object-contain bg-black rounded-lg"
             onTimeUpdate={onTimeUpdate}
             onSeeking={onSeeking}
@@ -709,7 +712,7 @@ export const MediaPlayerModal: React.FC<MediaPlayerModalProps> = ({
           <audio
             ref={audioRef}
             autoPlay
-            src={file.streamUrl}
+            src={file.streamUrl || file.externalStreamUrl || file.downloadUrl}
             onTimeUpdate={onTimeUpdate}
             onLoadedMetadata={onLoadedMetadata}
             onEnded={() => setIsPlaying(false)}
