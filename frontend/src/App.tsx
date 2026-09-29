@@ -392,9 +392,10 @@ export default function App() {
       ownerName: 'Seedr',
       isStreamable: type === 'video' || type === 'audio',
       downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
-      streamUrl: type === 'video' || type === 'audio'
-        ? '/api/seedr/files/stream?file_id=' + encodeURIComponent(file.streamId || file.id) + '&name=' + encodeURIComponent(file.name) + '&type=' + encodeURIComponent(type)
-        : '',
+      // The stream URL is resolved only when the user presses Stream.
+      // Keep this placeholder here so library rendering never depends on a
+      // runtime streamUrl variable.
+      streamUrl: '',
     };
   }, []);
 
@@ -1961,7 +1962,7 @@ export default function App() {
           return window.location.origin;
         }
       })();
-      const streamUrl =
+      const resolvedStreamUrl =
         result.protocol === 'direct' && result.externalUrl
           ? result.externalUrl
           : result.url;
@@ -1980,7 +1981,7 @@ export default function App() {
         ownerId: activeUser?.id || 'user_admin',
         ownerName: activeUser?.name || 'Admin',
         isStreamable: true,
-        streamUrl,
+        streamUrl: resolvedStreamUrl,
         externalStreamUrl: result.externalUrl,
         subtitleTracks,
         downloadUrl: '/api/seedr/files/' + encodeURIComponent(file.id) + '/download',
